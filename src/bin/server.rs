@@ -226,6 +226,8 @@ async fn handle_connection(
                 &(address.port() as i32),
                 &remote_id,
                 &(status.network_id as i64),
+                &status.fork_id.0,
+                &status.genesis,
                 &hello.client,
                 &serde_json::to_value(&cap).unwrap(),
             ],
