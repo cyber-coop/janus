@@ -4,12 +4,10 @@ use rand::RngCore;
 use secp256k1::SecretKey;
 use sha3::{Digest, Keccak256};
 use std::error::Error;
-use std::net::TcpListener;
-use std::net::TcpStream;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 
-static SERVER_ADDRESS: &str = "0.0.0.0";
 static SERVER_PORT: u16 = 50505;
 
 use void::config;
@@ -49,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .to_vec();
 
     let _node = Node::new(
-        format!("0.0.0.0:{}", SERVER_PORT).parse().unwrap(),
+        SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, SERVER_PORT).into(),
         private_key,
         networks::BOOTSTRAP_NODES
             .iter()
@@ -66,8 +64,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let private_key = private_key.secret_bytes();
 
-    let listener = TcpListener::bind(format!("{SERVER_ADDRESS}:{SERVER_PORT}")).unwrap();
-    info!("Server started on {SERVER_ADDRESS}:{SERVER_PORT}");
+    let tcp_bind_addr = SocketAddr::from((Ipv6Addr::UNSPECIFIED, SERVER_PORT));
+    let listener = TcpListener::bind(tcp_bind_addr).unwrap();
+    info!("Server started on [::]:{SERVER_PORT}");
 
     let postgres = Arc::new(postgres_client);
     loop {

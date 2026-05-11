@@ -1,7 +1,7 @@
 use core::time::Duration;
 use log::{error, info};
 use postgres::{Client, NoTls};
-use std::net::TcpStream;
+use std::net::{IpAddr, SocketAddr, TcpStream};
 
 use void::config;
 
@@ -29,7 +29,8 @@ fn main() {
         // let _udp_port: i32 = row.get(2);
         // let _node_id: Vec<u8> = row.get(3);
 
-        let socket_address = format!("{}:{}", ip, tcp_port).parse().unwrap();
+        let ip_addr: IpAddr = ip.parse().unwrap();
+        let socket_address = SocketAddr::from((ip_addr, tcp_port as u16));
 
         match TcpStream::connect_timeout(&socket_address, timeout_duration) {
             Ok(_) => {
