@@ -19,9 +19,7 @@ pub async fn connect(
     remote_id: Vec<u8>,
 ) -> (Option<Vec<(String, u32)>>, Option<i64>, Option<String>) {
     // connect to node
-    let addr: SocketAddr = format!("{}:{}", address, tcp_port)
-        .parse()
-        .expect("To be able to parse address");
+    let addr = SocketAddr::from((address, tcp_port));
 
     let target = format!("{}@{}", hex::encode(&remote_id), addr);
 

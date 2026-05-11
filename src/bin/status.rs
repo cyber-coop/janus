@@ -2,7 +2,7 @@ use log::{error, info};
 use secp256k1::rand::RngCore;
 use secp256k1::{rand, SecretKey};
 use sha3::{Digest, Keccak256};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::{net::TcpStream, time::Duration};
 use tokio::task::JoinSet;
@@ -53,7 +53,8 @@ async fn main() {
             let remote_id: Vec<u8> = record.get(3);
 
             // Connect to node
-            let addr: SocketAddr = format!("{}:{}", ip, port).parse().unwrap();
+            let ip_addr: IpAddr = ip.parse().unwrap();
+            let addr = SocketAddr::from((ip_addr, port as u16));
             let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10));
 
             let target = format!("{}@{}", hex::encode(&remote_id), addr);

@@ -1,6 +1,7 @@
 use discv4::Node;
 use log::{error, info};
 use secp256k1::SecretKey;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use tokio_postgres::NoTls;
 
 use void::config;
@@ -39,7 +40,7 @@ async fn main() {
 
     let port = 30303;
     let node = Node::new(
-        format!("0.0.0.0:{}", port).parse().unwrap(),
+        SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port).into(),
         SecretKey::new(&mut secp256k1::rand::thread_rng()),
         BOOTSTRAP_NODES.iter().map(|v| v.parse().unwrap()).collect(),
         None,
