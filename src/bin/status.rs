@@ -228,6 +228,7 @@ async fn main() {
                     ("eth".into(), 66),
                     ("eth".into(), 67),
                     ("eth".into(), 68),
+                    ("eth".into(), 69),
                 ],
                 port: 0,
                 id: secp256k1::PublicKey::from_secret_key(&secp, &private_key)
@@ -264,51 +265,63 @@ async fn main() {
                 );
                 return;
             }
-            let their_status = message::parse_status_message(uncrypted_body[1..].to_vec()).unwrap();
-
-            info!(target: &target,
-                "network_id = {:?}",
-                &their_status.network_id
-            );
-
-            /******************
-             *
-             *  Send STATUS message
-             *
-             ******************/
-
-            // Do we even need to send ou status ? We could just disconnect from here
-
-            info!(target: &target,
-                "Sending STATUS message",
-            );
 
             let genesis_hash = [
                 212, 229, 103, 64, 248, 118, 174, 248, 192, 16, 184, 106, 64, 213, 245, 103, 69,
                 161, 24, 208, 144, 106, 52, 230, 154, 236, 140, 13, 177, 203, 143, 163,
             ];
 
-            let status = message::Status {
-                version,
-                network_id: 1, // TODO: allow to do random networks
-                td: vec![0],
-                blockhash: genesis_hash.to_vec(),
-                genesis: genesis_hash.to_vec(),
-                fork_id: (vec![159, 61, 34, 84], 0),
-            };
+            let (their_network_id, their_fork_id, their_genesis) = if version >= 69 {
+                let their_status = message::parse_eth69_status_message(uncrypted_body[1..].to_vec()).unwrap();
+                info!(target: &target, "network_id = {:?}", &their_status.network_id);
 
-            // Send STATUS message
-            let status = message::create_status_message(status);
-            utils::send_message(status, &mut stream, &mut egress_mac, &mut egress_aes);
+                let reply = message::Status69 {
+                    version,
+                    network_id: 1,
+                    genesis: genesis_hash.to_vec(),
+                    fork_id: (vec![159, 61, 34, 84], 0),
+                    earliest: 0,
+                    latest: 0,
+                    latest_hash: genesis_hash.to_vec(),
+                };
+                utils::send_message(
+                    message::create_eth69_status_message(reply),
+                    &mut stream,
+                    &mut egress_mac,
+                    &mut egress_aes,
+                );
+
+                (their_status.network_id, their_status.fork_id.0, their_status.genesis)
+            } else {
+                let their_status = message::parse_status_message(uncrypted_body[1..].to_vec()).unwrap();
+                info!(target: &target, "network_id = {:?}", &their_status.network_id);
+
+                let reply = message::Status {
+                    version,
+                    network_id: 1,
+                    td: vec![0],
+                    blockhash: genesis_hash.to_vec(),
+                    genesis: genesis_hash.to_vec(),
+                    fork_id: (vec![159, 61, 34, 84], 0),
+                };
+                utils::send_message(
+                    message::create_status_message(reply),
+                    &mut stream,
+                    &mut egress_mac,
+                    &mut egress_aes,
+                );
+
+                (their_status.network_id, their_status.fork_id.0, their_status.genesis)
+            };
 
             let cap: Vec<(String, u32)> = serde_json::from_str(&capabilities).unwrap();
             let _result = postgres
                 .execute(
                     &update_statement,
                     &[
-                        &(their_status.network_id as i64),
-                        &their_status.fork_id.0,
-                        &their_status.genesis,
+                        &(their_network_id as i64),
+                        &their_fork_id,
+                        &their_genesis,
                         &serde_json::to_value(&cap).unwrap(),
                         &hello_message.client,
                         &remote_id,
