@@ -148,6 +148,7 @@ async fn handle_connection(
             ("eth".into(), 66),
             ("eth".into(), 67),
             ("eth".into(), 68),
+            ("eth".into(), 69),
         ],
         port: 0,
         id: secp256k1::PublicKey::from_secret_key(&secp, &private_key).serialize_uncompressed()
@@ -196,25 +197,49 @@ async fn handle_connection(
 
         return Err("Disconnected peer".into());
     }
-    let status = message::parse_status_message(uncrypted_body[1..].to_vec()).unwrap();
 
-    info!("Found status {:?}", &status);
+    let (network_id, fork_id, genesis) = if version >= 69 {
+        let status = message::parse_eth69_status_message(uncrypted_body[1..].to_vec()).unwrap();
+        info!("Found eth69 status {:?}", &status);
 
-    info!("Sending STATUS message");
-    let status_message = message::Status {
-        version,
-        network_id: network.network_id, // TODO: allow to do random networks
-        td: network.head_td.to_be_bytes().to_vec(),
-        blockhash: network.genesis_hash.to_vec(),
-        genesis: network.genesis_hash.to_vec(),
-        fork_id: (
-            network.fork_id[0].to_be_bytes().to_vec(),
-            network.fork_id[1].into(),
-        ),
+        let reply = message::Status69 {
+            version,
+            network_id: network.network_id,
+            genesis: network.genesis_hash.to_vec(),
+            fork_id: (
+                network.fork_id[0].to_be_bytes().to_vec(),
+                network.fork_id[1].into(),
+            ),
+            earliest: 0,
+            latest: 0,
+            latest_hash: network.genesis_hash.to_vec(),
+        };
+        let payload = message::create_eth69_status_message(reply);
+        utils::send_message(payload, stream, &mut egress_mac, &mut egress_aes);
+
+        (status.network_id, status.fork_id.0, status.genesis)
+    } else {
+        let status = message::parse_status_message(uncrypted_body[1..].to_vec()).unwrap();
+        info!("Found status {:?}", &status);
+
+        let reply = message::Status {
+            version,
+            network_id: network.network_id,
+            td: network.head_td.to_be_bytes().to_vec(),
+            blockhash: network.genesis_hash.to_vec(),
+            genesis: network.genesis_hash.to_vec(),
+            fork_id: (
+                network.fork_id[0].to_be_bytes().to_vec(),
+                network.fork_id[1].into(),
+            ),
+        };
+        let payload = message::create_status_message(reply);
+        utils::send_message(payload, stream, &mut egress_mac, &mut egress_aes);
+
+        (status.network_id, status.fork_id.0, status.genesis)
     };
 
-    let payload = message::create_status_message(status_message);
-    utils::send_message(payload, stream, &mut egress_mac, &mut egress_aes);
+    info!("Sending STATUS message done");
 
     let address = stream.peer_addr().expect("to have a peer address");
     let cap: Vec<(String, u32)> = serde_json::from_str(&capabilities).unwrap();
@@ -225,9 +250,9 @@ async fn handle_connection(
                 &address.ip().to_string(),
                 &(address.port() as i32),
                 &remote_id,
-                &(status.network_id as i64),
-                &status.fork_id.0,
-                &status.genesis,
+                &(network_id as i64),
+                &fork_id,
+                &genesis,
                 &hello.client,
                 &serde_json::to_value(&cap).unwrap(),
             ],
