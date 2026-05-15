@@ -2,7 +2,6 @@ use aes::cipher::{KeyIvInit, StreamCipher};
 use byteorder::ByteOrder;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use hmac_sha256::{Hash, HMAC};
-use rand_core::{OsRng, RngCore};
 use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use secp256k1::Message;
 use sha3::{Digest, Keccak256};
