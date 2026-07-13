@@ -1,8 +1,8 @@
 use discv4::{Node, NodeId};
 use secp256k1::SecretKey;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::net::{Ipv4Addr, SocketAddrV4};
-use tokio_postgres::NoTls;
-use tracing::{error, info};
+use tracing::info;
 
 use janus::config;
 
@@ -22,23 +22,17 @@ async fn main() {
 
     let cfg = config::read_config();
 
-    let database_params = format!(
-        "host={} user={} password={} dbname={}",
-        cfg.database.host, cfg.database.user, cfg.database.password, cfg.database.dbname,
-    );
+    let connect_options = PgConnectOptions::new()
+        .host(&cfg.database.host)
+        .username(&cfg.database.user)
+        .password(&cfg.database.password)
+        .database(&cfg.database.dbname);
 
-    let (postgres_client, connection) = tokio_postgres::connect(&database_params, NoTls)
+    let pool = PgPoolOptions::new()
+        .connect_with(connect_options)
         .await
-        .unwrap();
+        .expect("database to be reachable");
     info!("Connection to the database created");
-
-    // The connection object performs the actual communication with the database,
-    // so spawn it off to run on its own.
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            error!("connection error: {}", e);
-        }
-    });
 
     let port = 30303;
     let node = Node::new(
@@ -52,10 +46,6 @@ async fn main() {
     .await
     .unwrap();
 
-    let statement = postgres_client
-        .prepare("INSERT INTO nodes VALUES ($1,$2,$3,$4);")
-        .await
-        .unwrap();
     loop {
         let target = NodeId::random();
         info!("Looking up random target: {}", target);
@@ -64,17 +54,14 @@ async fn main() {
         for entry in result {
             info!("Found node: {:?}", entry);
             // we don't check result because we don't care
-            let _ = postgres_client
-                .execute(
-                    &statement,
-                    &[
-                        &entry.address.to_string(),
-                        &(entry.tcp_port as i32),
-                        &(entry.udp_port as i32),
-                        &entry.id.as_bytes(),
-                    ],
-                )
-                .await;
+            let _ =
+                sqlx::query("INSERT INTO nodes (ip, tcp_port, udp_port, id) VALUES ($1,$2,$3,$4);")
+                    .bind(entry.address.to_string())
+                    .bind(entry.tcp_port as i32)
+                    .bind(entry.udp_port as i32)
+                    .bind(entry.id.as_bytes())
+                    .execute(&pool)
+                    .await;
         }
 
         info!("Current nodes: {}", node.num_nodes());

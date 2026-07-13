@@ -2,9 +2,10 @@ use discv4::Node;
 use rand::Rng;
 use secp256k1::SecretKey;
 use sha3::{Digest, Keccak256};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::PgPool;
 use std::error::Error;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
-use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
@@ -27,20 +28,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cfg = config::read_config();
     // Connect to postgres
-    let database_params = format!(
-        "host={} user={} password={} dbname={}",
-        cfg.database.host, cfg.database.user, cfg.database.password, cfg.database.dbname,
-    );
-    let (postgres_client, connection) =
-        tokio_postgres::connect(&database_params, tokio_postgres::NoTls)
-            .await
-            .unwrap();
+    let connect_options = PgConnectOptions::new()
+        .host(&cfg.database.host)
+        .username(&cfg.database.user)
+        .password(&cfg.database.password)
+        .database(&cfg.database.dbname);
+
+    let pool = PgPoolOptions::new()
+        .connect_with(connect_options)
+        .await
+        .unwrap();
     info!("Connection to the database created");
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            error!("connection error: {}", e);
-        }
-    });
 
     let private_key = SecretKey::new(&mut secp256k1::rand::thread_rng());
     let secp = secp256k1::Secp256k1::new();
@@ -73,7 +71,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("server to start");
     info!("Server started on [::]:{SERVER_PORT}");
 
-    let postgres = Arc::new(postgres_client);
     loop {
         let (mut socket, addr) = match listener.accept().await {
             Ok(conn) => conn,
@@ -84,11 +81,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         info!("New connection: {:?}", addr);
 
-        let postgres = postgres.clone();
+        let pool = pool.clone();
         tokio::spawn(async move {
             if let Err(err) = handle_connection(
                 &mut socket,
-                &postgres,
+                &pool,
                 &private_key.to_vec(),
                 networks::Network::ETHEREUM_MAINNET,
             )
@@ -104,12 +101,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn handle_connection(
     stream: &mut TcpStream,
-    postgres_client: &tokio_postgres::Client,
+    pool: &PgPool,
     private_key: &Vec<u8>,
     network: networks::Network,
 ) -> Result<(), Box<dyn Error>> {
-    let insert_statement = postgres_client.prepare("INSERT INTO nodes (ip, tcp_port, id, network_id, fork_id, genesis, client, capabilities) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO UPDATE SET network_id=$4, fork_id = $5, genesis=$6, client=$7, capabilities=$8;").await.unwrap();
-
     let mut nonce = vec![0; 32];
     rand::rng().fill_bytes(&mut nonce);
     let ephemeral_privkey = SecretKey::new(&mut secp256k1::rand::thread_rng())
@@ -253,20 +248,16 @@ async fn handle_connection(
 
     let address = stream.peer_addr().expect("to have a peer address");
     let cap: Vec<(String, u32)> = serde_json::from_str(&capabilities).unwrap();
-    let _ = postgres_client
-        .execute(
-            &insert_statement,
-            &[
-                &address.ip().to_string(),
-                &(address.port() as i32),
-                &remote_id,
-                &(network_id as i64),
-                &fork_id,
-                &genesis,
-                &hello.client,
-                &serde_json::to_value(&cap).unwrap(),
-            ],
-        )
+    sqlx::query("INSERT INTO nodes (ip, tcp_port, id, network_id, fork_id, genesis, client, capabilities) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO UPDATE SET network_id=$4, fork_id = $5, genesis=$6, client=$7, capabilities=$8;")
+        .bind(address.ip().to_string())
+        .bind(address.port() as i32)
+        .bind(&remote_id)
+        .bind(network_id as i64)
+        .bind(&fork_id)
+        .bind(&genesis)
+        .bind(&hello.client)
+        .bind(serde_json::to_value(&cap).unwrap())
+        .execute(pool)
         .await
         .unwrap();
 

@@ -1,12 +1,12 @@
 use secp256k1::rand::RngCore;
 use secp256k1::{rand, SecretKey};
 use sha3::{Digest, Keccak256};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::Row;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::task::JoinSet;
-use tokio_postgres::NoTls;
 use tracing::{error, info, Instrument};
 
 use janus::config;
@@ -24,33 +24,26 @@ async fn main() {
     let cfg = config::read_config();
 
     // Connect to postgres
-    let database_params = format!(
-        "host={} user={} password={} dbname={}",
-        cfg.database.host, cfg.database.user, cfg.database.password, cfg.database.dbname,
-    );
+    let connect_options = PgConnectOptions::new()
+        .host(&cfg.database.host)
+        .username(&cfg.database.user)
+        .password(&cfg.database.password)
+        .database(&cfg.database.dbname);
 
-    let (postgres_client, connection) = tokio_postgres::connect(&database_params, NoTls)
+    let pool = PgPoolOptions::new()
+        .connect_with(connect_options)
         .await
         .unwrap();
 
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            error!("connection error: {}", e);
-        }
-    });
-
-    let records = postgres_client
-        .query("SELECT * FROM nodes ORDER BY RANDOM();", &[])
+    let records = sqlx::query("SELECT * FROM nodes ORDER BY RANDOM();")
+        .fetch_all(&pool)
         .await
         .unwrap();
 
-    let postgres = Arc::new(postgres_client);
     let mut set = JoinSet::new();
     for record in records {
-        let postgres = postgres.clone();
+        let pool = pool.clone();
         set.spawn(async move {
-            let update_statement = postgres.prepare("UPDATE nodes SET network_id = $1, fork_id = $2, genesis = $3, capabilities = $4, client = $5, last_ping_timestamp = NOW() WHERE id = $6;").await.unwrap();
-
             let ip: String = record.get(0);
             let port: i32 = record.get(1);
             let remote_id: Vec<u8> = record.get(3);
@@ -285,18 +278,14 @@ async fn main() {
                 };
 
                 let cap: Vec<(String, u32)> = serde_json::from_str(&capabilities).unwrap();
-                let _result = postgres
-                    .execute(
-                        &update_statement,
-                        &[
-                            &(their_network_id as i64),
-                            &their_fork_id,
-                            &their_genesis,
-                            &serde_json::to_value(&cap).unwrap(),
-                            &hello_message.client,
-                            &remote_id,
-                        ],
-                    )
+                sqlx::query("UPDATE nodes SET network_id = $1, fork_id = $2, genesis = $3, capabilities = $4, client = $5, last_ping_timestamp = NOW() WHERE id = $6;")
+                    .bind(their_network_id as i64)
+                    .bind(&their_fork_id)
+                    .bind(&their_genesis)
+                    .bind(serde_json::to_value(&cap).unwrap())
+                    .bind(&hello_message.client)
+                    .bind(&remote_id)
+                    .execute(&pool)
                     .await
                     .unwrap();
             }
