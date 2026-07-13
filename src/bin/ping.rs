@@ -3,7 +3,7 @@ use log::{error, info};
 use postgres::{Client, NoTls};
 use std::net::{IpAddr, SocketAddr, TcpStream};
 
-use void::config;
+use janus::config;
 
 fn main() {
     // init logger

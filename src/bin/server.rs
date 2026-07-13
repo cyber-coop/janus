@@ -4,16 +4,17 @@ use rand::RngCore;
 use secp256k1::SecretKey;
 use sha3::{Digest, Keccak256};
 use std::error::Error;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
-use std::time::Duration;
+use tokio::io::AsyncWriteExt;
+use tokio::net::{TcpListener, TcpStream};
 
 static SERVER_PORT: u16 = 50505;
 
-use void::config;
-use void::message;
-use void::networks;
-use void::utils;
+use janus::config;
+use janus::message;
+use janus::networks;
+use janus::utils;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -65,16 +66,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let private_key = private_key.secret_bytes();
 
     let tcp_bind_addr = SocketAddr::from((Ipv6Addr::UNSPECIFIED, SERVER_PORT));
-    let listener = TcpListener::bind(tcp_bind_addr).unwrap();
+    let listener = TcpListener::bind(tcp_bind_addr)
+        .await
+        .expect("server to start");
     info!("Server started on [::]:{SERVER_PORT}");
 
     let postgres = Arc::new(postgres_client);
     loop {
-        let (mut socket, addr) = listener.accept().unwrap();
-        // Set read timeout
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
+        let (mut socket, addr) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(err) => {
+                error!("Failed to accept connection: {}", err);
+                continue;
+            }
+        };
         info!("New connection: {:?}", addr);
 
         let postgres = postgres.clone();
@@ -111,13 +116,13 @@ async fn handle_connection(
     let pad = vec![0; 100]; // should be generated randomly but we don't really care
 
     // Handle auth eip8 message
-    let (payload, shared_mac_data) = utils::read_auth_eip8(stream).unwrap();
+    let (payload, shared_mac_data) = utils::read_auth_eip8(stream).await?;
     let (remote_id, remote_nonce, ephemeral_shared_secret) =
         utils::verify_auth_eip8(&payload, &shared_mac_data, private_key, &ephemeral_privkey);
 
     // Send Ack message
     let init_msg = utils::create_ack(&remote_id, &nonce, &ephemeral_privkey, &pad);
-    utils::send_ack_message(&init_msg, stream)?;
+    stream.write_all(&init_msg).await?;
 
     // Setup Frame
     // IMPORTANT!!! When receiving connection we reverse nonce order (see https://github.com/paradigmxyz/reth/blob/main/crates/net/ecies/src/algorithm.rs#L584C31-L584C39)
@@ -160,7 +165,8 @@ async fn handle_connection(
     utils::send_message(payload, stream, &mut egress_mac, &mut egress_aes);
 
     // Handle HELLO
-    let uncrypted_body = match utils::read_message(stream, &mut ingress_mac, &mut ingress_aes) {
+    let uncrypted_body = match utils::read_message(stream, &mut ingress_mac, &mut ingress_aes).await
+    {
         Ok(ub) => ub,
         Err(err) => {
             return Err(format!("{:?}", err).into());
@@ -191,7 +197,9 @@ async fn handle_connection(
     }
 
     info!("Handling STATUS message");
-    let uncrypted_body = utils::read_message(stream, &mut ingress_mac, &mut ingress_aes).unwrap();
+    let uncrypted_body = utils::read_message(stream, &mut ingress_mac, &mut ingress_aes)
+        .await
+        .unwrap();
     if uncrypted_body[0] == 0x01 {
         warn!("Disconnect message : {}", hex::encode(&uncrypted_body));
 

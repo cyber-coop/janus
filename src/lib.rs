@@ -1,5 +1,4 @@
 pub mod config;
-pub mod connection;
 pub mod errors;
 pub mod mac;
 pub mod message;

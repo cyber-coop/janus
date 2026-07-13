@@ -6,9 +6,10 @@ use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use secp256k1::Message;
 use sha3::{Digest, Keccak256};
 use std::error;
-use std::thread;
+use std::io;
 use std::time::Duration;
-use std::{io::prelude::*, net::TcpStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 use super::mac;
 
@@ -16,7 +17,7 @@ pub type Aes128Ctr64BE = ctr::Ctr64BE<aes::Aes128>;
 pub type Aes256Ctr64BE = ctr::Ctr64BE<aes::Aes256>;
 const TIMEOUT_ATTEMPRS: usize = 40;
 
-pub fn ecdh_x(pubkey: &Vec<u8>, privkey: &Vec<u8>) -> Vec<u8> {
+pub fn ecdh_x(pubkey: &[u8], privkey: &[u8]) -> Vec<u8> {
     let sk = k256::ecdsa::SigningKey::from_slice(privkey).unwrap();
     let pk = k256::PublicKey::from_sec1_bytes(pubkey).unwrap();
     let shared_secret =
@@ -34,8 +35,8 @@ pub fn concat_kdf(key_material: Vec<u8>, key_length: usize) -> Vec<u8> {
 
     while counter <= reps {
         counter += 1;
-        let mut tmp: Vec<u8> = vec![];
-        tmp.write_u32::<BigEndian>(counter as u32).unwrap();
+        let mut tmp = [0u8; 4];
+        BigEndian::write_u32(&mut tmp, counter as u32);
         let mut hash = Hash::new();
         hash.update(tmp);
         hash.update(&key_material);
@@ -48,11 +49,7 @@ pub fn concat_kdf(key_material: Vec<u8>, key_length: usize) -> Vec<u8> {
     return result[0..key_length].to_vec();
 }
 
-pub fn encrypt_message(
-    remote_public: &Vec<u8>,
-    mut data: Vec<u8>,
-    shared_mac_data: &Vec<u8>,
-) -> Vec<u8> {
+pub fn encrypt_message(remote_public: &[u8], mut data: Vec<u8>, shared_mac_data: &[u8]) -> Vec<u8> {
     // let privkey = k256::SecretKey::random(&mut OsRng);
     let privkey = k256::SecretKey::from_slice(&[1_u8; 32]).unwrap();
     let x = ecdh_x(remote_public, &privkey.to_bytes().to_vec());
@@ -182,37 +179,29 @@ pub fn create_auth_eip8(
     auth_message.extend(pad);
 
     let overhead_length = 113;
-    let mut shared_mac_data: Vec<u8> = vec![];
-    shared_mac_data
-        .write_u16::<BigEndian>((auth_message.len() + overhead_length) as u16)
-        .unwrap();
+    let shared_mac_data = ((auth_message.len() + overhead_length) as u16).to_be_bytes();
 
     // Encrypt message
     let enrcyped_auth_message = encrypt_message(&remote_public_key, auth_message, &shared_mac_data);
 
-    let init_msg = [shared_mac_data, enrcyped_auth_message].concat();
+    let init_msg = [shared_mac_data.to_vec(), enrcyped_auth_message].concat();
 
     return init_msg;
 }
 
-pub fn read_auth_eip8(stream: &mut TcpStream) -> Result<(Vec<u8>, Vec<u8>), Box<dyn error::Error>> {
-    let mut buf = [0u8; 2];
-    let _size = stream.read_exact(&mut buf)?;
+pub async fn read_auth_eip8(
+    stream: &mut TcpStream,
+) -> Result<(Vec<u8>, Vec<u8>), Box<dyn error::Error>> {
+    let timeout = Duration::from_millis(100 * TIMEOUT_ATTEMPRS as u64);
 
-    let size_expected = buf.as_slice().read_u16::<BigEndian>().unwrap() as usize;
+    let mut buf = [0u8; 2];
+    tokio::time::timeout(timeout, stream.read_exact(&mut buf)).await??;
+
+    let size_expected = BigEndian::read_u16(&buf) as usize;
     let shared_mac_data = &buf[0..2];
 
-    let mut payload = vec![0u8; size_expected.into()];
-    let mut attempts = 0;
-    while stream.peek(&mut payload)? < size_expected {
-        thread::sleep(Duration::from_millis(100));
-
-        attempts = attempts + 1;
-        if attempts >= TIMEOUT_ATTEMPRS {
-            return Err("Timed out".into());
-        }
-    }
-    stream.read_exact(&mut payload)?;
+    let mut payload = vec![0u8; size_expected];
+    tokio::time::timeout(timeout, stream.read_exact(&mut payload)).await??;
 
     Ok((payload, shared_mac_data.to_vec()))
 }
@@ -359,7 +348,7 @@ pub fn setup_frame(
 
 // NOTE: could be [u8; 32]
 pub fn parse_header(
-    data: &Vec<u8>,
+    data: &[u8],
     ingress_mac: &mut mac::MAC,
     ingress_aes: &mut Aes256Ctr64BE,
 ) -> usize {
@@ -440,102 +429,62 @@ pub fn create_body(
     return [body_message.to_vec(), tag].concat().to_vec();
 }
 
-pub fn send_message(
+pub async fn send_message(
     msg: Vec<u8>,
-    stream: &mut std::net::TcpStream,
+    stream: &mut TcpStream,
     egress_mac: &mut mac::MAC,
     egress_aes: &mut Aes256Ctr64BE,
-) {
+) -> Result<(), Box<dyn error::Error>> {
     let header = create_header(msg.len(), egress_mac, egress_aes);
-
-    stream.write(&header).unwrap();
-    stream.flush().unwrap();
-
     let body = create_body(msg, egress_mac, egress_aes);
 
-    stream.write(&body).unwrap();
-    stream.flush().unwrap();
+    stream.write_all(&[header, body].concat()).await?;
+
+    Ok(())
 }
 
-pub fn read_message(
-    stream: &mut std::net::TcpStream,
+pub async fn read_message(
+    stream: &mut TcpStream,
     ingress_mac: &mut mac::MAC,
     ingress_aes: &mut Aes256Ctr64BE,
 ) -> Result<Vec<u8>, Box<dyn error::Error>> {
     let mut buf = [0u8; 32];
-    let res = stream.read_exact(&mut buf)?;
+    tokio::time::timeout(Duration::from_secs(30), stream.read_exact(&mut buf))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "read header timeout"))??;
 
-    let next_size = parse_header(&buf.to_vec(), ingress_mac, ingress_aes);
+    assert_eq!(buf.len(), 32);
 
-    // Message payload
-    let mut body: Vec<u8> = vec![];
+    let next_size = parse_header(buf.as_ref(), ingress_mac, ingress_aes);
     let body_size = get_body_len(next_size);
 
-    let mut attempts = 0;
-
-    // we have this loop to be sure we have received the complete payload
-    while body.len() < body_size {
-        let mut buf: Vec<u8> = vec![0; body_size - body.len()];
-        let l = stream.read(&mut buf)?;
-
-        body.extend(&buf[0..l]);
-        thread::sleep(Duration::from_millis(100));
-
-        attempts = attempts + 1;
-        if attempts >= TIMEOUT_ATTEMPRS {
-            return Err("Timed out".into());
-        }
-    }
+    let mut body = vec![0u8; body_size];
+    tokio::time::timeout(Duration::from_secs(30), stream.read_exact(&mut body))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "read body timeout"))??;
 
     assert_eq!(body.len(), body_size);
 
-    let uncrypted_body = parse_body(&body, ingress_mac, ingress_aes, next_size);
-
-    return Ok(uncrypted_body);
+    Ok(parse_body(&body, ingress_mac, ingress_aes, next_size))
 }
 
-pub fn send_eip8_auth_message(
-    msg: &Vec<u8>,
-    stream: &mut std::net::TcpStream,
-) -> Result<(), Box<dyn error::Error>> {
-    stream.write(&msg)?;
-    stream.flush()?;
-
-    Ok(())
-}
-
-pub fn send_ack_message(
-    msg: &Vec<u8>,
-    stream: &mut std::net::TcpStream,
-) -> Result<(), Box<dyn error::Error>> {
-    stream.write(&msg)?;
-    stream.flush()?;
-
-    Ok(())
-}
-
-pub fn read_ack_message(
-    stream: &mut std::net::TcpStream,
+pub async fn read_ack_message(
+    stream: &mut TcpStream,
 ) -> Result<(Vec<u8>, Vec<u8>), Box<dyn error::Error>> {
+    let timeout = Duration::from_millis(100 * TIMEOUT_ATTEMPRS as u64);
+
     let mut buf = [0u8; 2];
-    let _size = stream.read_exact(&mut buf)?;
+    tokio::time::timeout(timeout, stream.read_exact(&mut buf)).await??;
 
-    let size_expected = buf.as_slice().read_u16::<BigEndian>().unwrap() as usize;
-    let shared_mac_data = &buf[0..2];
+    let size_expected = BigEndian::read_u16(&buf) as usize;
+    let shared_mac_data = buf[0..2].to_vec();
 
-    let mut payload = vec![0u8; size_expected.into()];
-    let mut attempts = 0;
-    while stream.peek(&mut payload)? < size_expected {
-        thread::sleep(Duration::from_millis(100));
+    let mut payload = vec![0u8; size_expected];
+    tokio::time::timeout(timeout, stream.read_exact(&mut payload)).await??;
 
-        attempts = attempts + 1;
-        if attempts >= TIMEOUT_ATTEMPRS {
-            return Err("Timed out".into());
-        }
-    }
-    stream.read_exact(&mut payload)?;
+    assert_eq!(payload.len(), size_expected);
 
-    Ok((payload, shared_mac_data.to_vec()))
+    Ok((payload, shared_mac_data))
 }
 
 pub fn create_ack(
@@ -565,17 +514,14 @@ pub fn create_ack(
 
     // Concat padding to the encoded data
     ack_message.extend(encoded_data.to_vec());
-    /// ack_message.extend(pad);
+    // ack_message.extend(pad);
     let overhead_length = 113;
-    let mut shared_mac_data: Vec<u8> = vec![];
-    shared_mac_data
-        .write_u16::<BigEndian>((ack_message.len() + overhead_length) as u16)
-        .unwrap();
+    let shared_mac_data = ((ack_message.len() + overhead_length) as u16).to_be_bytes();
 
     // Encrypt message
     let enrcyped_ack_message = encrypt_message(&remote_public_key, ack_message, &shared_mac_data);
 
-    let init_msg = [shared_mac_data, enrcyped_ack_message].concat();
+    let init_msg = [shared_mac_data.to_vec(), enrcyped_ack_message].concat();
 
     return init_msg;
 }

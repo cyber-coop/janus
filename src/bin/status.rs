@@ -4,13 +4,14 @@ use secp256k1::{rand, SecretKey};
 use sha3::{Digest, Keccak256};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::{net::TcpStream, time::Duration};
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
 use tokio::task::JoinSet;
 use tokio_postgres::NoTls;
 
-use void::config;
-use void::message;
-use void::utils;
+use janus::config;
+use janus::message;
+use janus::utils;
 
 #[tokio::main]
 async fn main() {
@@ -55,22 +56,20 @@ async fn main() {
             // Connect to node
             let ip_addr: IpAddr = ip.parse().unwrap();
             let addr = SocketAddr::from((ip_addr, port as u16));
-            let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10));
+            let stream = TcpStream::connect(&addr).await;
 
             let target = format!("{}@{}", hex::encode(&remote_id), addr);
 
-            if stream.is_err() {
-                error!(target: &target,
-                    "Couldn't reach node",
-                );
-                return;
-            }
+            let mut stream = match TcpStream::connect(&addr).await {
+                Ok(s) => s,
+                Err(_) => {
+                    error!(target: &target,
+                        "Couldn't reach node",
+                    );
+                    return;
+                }
+            };
 
-            let mut stream = stream.unwrap();
-            // Set read timeout
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
 
             let private_key = SecretKey::new(&mut rand::thread_rng())
                 .secret_bytes()
@@ -98,7 +97,7 @@ async fn main() {
                 "Sending EIP8 Auth message",
             );
 
-            if let Err(err) = utils::send_eip8_auth_message(&init_msg, &mut stream) {
+            if let Err(err) = stream.write_all(&init_msg).await {
                 error!(target: &target,
                     "Couldn't send eip8 ({})",
                     err
@@ -111,7 +110,7 @@ async fn main() {
             );
 
             // Read Ack
-            let (payload, shared_mac_data) = match utils::read_ack_message(&mut stream) {
+            let (payload, shared_mac_data) = match utils::read_ack_message(&mut stream).await {
                 Ok((payload, shared_mac_data)) => (payload, shared_mac_data),
                 Err(err) => {
                     error!(target: &target,
@@ -174,7 +173,7 @@ async fn main() {
              *
              ******************/
 
-            let uncrypted_body = match utils::read_message(&mut stream, &mut ingress_mac, &mut ingress_aes) {
+            let uncrypted_body = match utils::read_message(&mut stream, &mut ingress_mac, &mut ingress_aes).await {
                 Ok(ub) => ub,
                 Err(err) => {
                     error!(target: &target,"{}", err);
@@ -229,6 +228,7 @@ async fn main() {
                     ("eth".into(), 67),
                     ("eth".into(), 68),
                     ("eth".into(), 69),
+                    // TODO: add 70 and 71
                 ],
                 port: 0,
                 id: secp256k1::PublicKey::from_secret_key(&secp, &private_key)
@@ -248,7 +248,7 @@ async fn main() {
             info!(target: &target,
                 "Handling STATUS message",
             );
-            let uncrypted_body = match utils::read_message(&mut stream, &mut ingress_mac, &mut ingress_aes) {
+            let uncrypted_body = match utils::read_message(&mut stream, &mut ingress_mac, &mut ingress_aes).await {
                 Ok(ub) => ub,
                 Err(err) => {
                     error!(target: &target,"{}", err);
@@ -284,12 +284,12 @@ async fn main() {
                     latest: 0,
                     latest_hash: genesis_hash.to_vec(),
                 };
-                utils::send_message(
+                let _ = utils::send_message(
                     message::create_eth69_status_message(reply),
                     &mut stream,
                     &mut egress_mac,
                     &mut egress_aes,
-                );
+                ).await;
 
                 (their_status.network_id, their_status.fork_id.0, their_status.genesis)
             } else {
@@ -304,12 +304,12 @@ async fn main() {
                     genesis: genesis_hash.to_vec(),
                     fork_id: (vec![159, 61, 34, 84], 0),
                 };
-                utils::send_message(
+                let _ = utils::send_message(
                     message::create_status_message(reply),
                     &mut stream,
                     &mut egress_mac,
                     &mut egress_aes,
-                );
+                ).await;
 
                 (their_status.network_id, their_status.fork_id.0, their_status.genesis)
             };

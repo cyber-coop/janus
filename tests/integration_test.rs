@@ -1,7 +1,7 @@
 use devp2p::{ecies::ECIES, util::pk2id};
+use janus::utils;
 use secp256k1_20::{PublicKey, SecretKey, SECP256K1};
 use sha3::{Digest, Keccak256};
-use void::utils;
 
 #[test]
 fn communicate() {
