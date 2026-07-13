@@ -1,6 +1,6 @@
 use aes::cipher::{KeyIvInit, StreamCipher};
 use byteorder::ByteOrder;
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{BigEndian, ReadBytesExt};
 use hmac_sha256::{Hash, HMAC};
 use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use secp256k1::Message;
@@ -58,10 +58,10 @@ pub fn encrypt_message(remote_public: &[u8], mut data: Vec<u8>, shared_mac_data:
     let m_key = Hash::hash(&key[16..32]); // mac key
 
     // encrypt
-    let mut iv = [0u8; 16];
+    let iv = [0u8; 16];
     // OsRng.fill_bytes(&mut iv);
 
-    let mut cipher = Aes128Ctr64BE::new(e_key.into(), &iv.into());
+    let mut cipher = Aes128Ctr64BE::new(e_key.try_into().unwrap(), &iv.into());
     cipher.apply_keystream(&mut data);
 
     let mut data_iv: Vec<u8> = vec![];
@@ -76,7 +76,7 @@ pub fn encrypt_message(remote_public: &[u8], mut data: Vec<u8>, shared_mac_data:
 
     let public_key = privkey.public_key();
     let vkey = k256::ecdsa::VerifyingKey::from(public_key);
-    let uncompressed_pubkey_bytes = vkey.to_encoded_point(false).to_bytes();
+    let uncompressed_pubkey_bytes = vkey.to_sec1_point(false).to_bytes();
 
     let mut result: Vec<u8> = vec![];
 
@@ -116,7 +116,7 @@ pub fn decrypt_message(
     // decrypt data
     let iv = &data_iv[0..16];
     let mut encrypted_data = data_iv[16..].to_vec();
-    let mut decipher = Aes128Ctr64BE::new(e_key.into(), iv.into());
+    let mut decipher = Aes128Ctr64BE::new(e_key.try_into().unwrap(), iv.try_into().unwrap());
     // decipher encrypted_data and return result in encrypted_data variable
     decipher.apply_keystream(&mut encrypted_data);
 
@@ -148,7 +148,7 @@ pub fn create_auth_eip8(
     let ephemeral_signing_key = secp256k1::SecretKey::from_slice(&ephemeral_privkey).unwrap();
     let (recid, sig) = secp256k1::SECP256K1
         .sign_ecdsa_recoverable(
-            &secp256k1::Message::from_slice(&msg_hash).unwrap(),
+            &secp256k1::Message::from_digest_slice(&msg_hash).unwrap(),
             &ephemeral_signing_key,
         )
         .serialize_compact();
@@ -162,7 +162,7 @@ pub fn create_auth_eip8(
     // Initialize array with empty vectors
     let sk = k256::ecdsa::SigningKey::from_slice(&private_key).unwrap();
     let vkey = sk.verifying_key();
-    let uncompressed_pubkey_bytes = vkey.to_encoded_point(false).to_bytes();
+    let uncompressed_pubkey_bytes = vkey.to_sec1_point(false).to_bytes();
 
     let data = vec![
         rsv_sig,
@@ -237,7 +237,7 @@ pub fn verify_auth_eip8(
         .map(|(&x1, &x2)| x1 ^ x2)
         .collect();
 
-    let msg = Message::from_slice(&msg_hash).unwrap();
+    let msg = Message::from_digest_slice(&msg_hash).unwrap();
     let remote_ephemeral_public_key = sig.recover(&msg).unwrap().serialize_uncompressed().to_vec();
 
     let ephemeral_shared_secret = ecdh_x(&remote_ephemeral_public_key, ephemeral_privkey);
@@ -269,7 +269,7 @@ pub fn create_auth_non_eip8(
     let ephemeral_signing_key = secp256k1::SecretKey::from_slice(&ephemeral_privkey).unwrap();
     let (recid, sig) = secp256k1::SECP256K1
         .sign_ecdsa_recoverable(
-            &secp256k1::Message::from_slice(&msg_hash).unwrap(),
+            &secp256k1::Message::from_digest_slice(&msg_hash).unwrap(),
             &ephemeral_signing_key,
         )
         .serialize_compact();
@@ -277,7 +277,7 @@ pub fn create_auth_non_eip8(
     // Initialize array with empty vectors
     let sk = k256::ecdsa::SigningKey::from_slice(&private_key).unwrap();
     let vkey = sk.verifying_key();
-    let uncompressed_pubkey_bytes = vkey.to_encoded_point(false).to_bytes();
+    let uncompressed_pubkey_bytes = vkey.to_sec1_point(false).to_bytes();
 
     let mut hasher = Keccak256::new();
     hasher.update(&[vec![4], ephemeral_pubkey.to_vec()].concat());
@@ -491,7 +491,7 @@ pub fn create_ack(
     remote_id: &Vec<u8>,
     nonce: &Vec<u8>,
     ephemeral_privkey: &Vec<u8>,
-    pad: &Vec<u8>,
+    _pad: &Vec<u8>,
 ) -> Vec<u8> {
     let mut ack_message: Vec<u8> = vec![];
     // Add 04 to the remote ID to get the remote public key

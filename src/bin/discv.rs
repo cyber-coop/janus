@@ -1,4 +1,4 @@
-use discv4::Node;
+use discv4::{Node, NodeId};
 use secp256k1::SecretKey;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use tokio_postgres::NoTls;
@@ -57,7 +57,7 @@ async fn main() {
         .await
         .unwrap();
     loop {
-        let target = rand::random();
+        let target = NodeId::random();
         info!("Looking up random target: {}", target);
         let result = node.lookup(target).await;
 

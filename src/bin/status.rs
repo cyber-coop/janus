@@ -213,7 +213,7 @@ async fn main() {
                 };
 
                 let payload = message::create_hello_message(hello);
-                utils::send_message(payload, &mut stream, &mut egress_mac, &mut egress_aes);
+                let _ = utils::send_message(payload, &mut stream, &mut egress_mac, &mut egress_aes).await;
 
                 /******************
                  *

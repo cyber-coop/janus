@@ -1,4 +1,4 @@
-use aes::cipher::{block_padding::NoPadding, BlockEncryptMut, KeyInit};
+use aes::cipher::{block_padding::NoPadding, BlockModeEncrypt, KeyInit};
 use sha3::{Digest, Keccak256};
 
 pub struct MAC {
@@ -20,11 +20,9 @@ impl MAC {
     }
 
     pub fn update_header(&mut self, data: &mut Vec<u8>) {
-        let aes = Aes256EcbEnc::new(self.secret.as_slice().into());
+        let aes = Aes256EcbEnc::new(self.secret.as_slice().try_into().unwrap());
         let mut block = self.digest();
-        let encrypted = aes
-            .encrypt_padded_mut::<NoPadding>(block.as_mut(), 16)
-            .unwrap();
+        let encrypted = aes.encrypt_padded::<NoPadding>(block.as_mut(), 16).unwrap();
 
         let xor_result: Vec<u8> = encrypted
             .iter()
@@ -39,11 +37,9 @@ impl MAC {
         self.hash.update(data);
         let prev = self.digest();
 
-        let aes = Aes256EcbEnc::new(self.secret.as_slice().into());
+        let aes = Aes256EcbEnc::new(self.secret.as_slice().try_into().unwrap());
         let mut block = prev.clone();
-        let encrypted = aes
-            .encrypt_padded_mut::<NoPadding>(block.as_mut(), 16)
-            .unwrap();
+        let encrypted = aes.encrypt_padded::<NoPadding>(block.as_mut(), 16).unwrap();
 
         let xor_result: Vec<u8> = encrypted
             .iter()

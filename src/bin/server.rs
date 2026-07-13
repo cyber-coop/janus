@@ -1,5 +1,5 @@
 use discv4::Node;
-use rand::RngCore;
+use rand::Rng;
 use secp256k1::SecretKey;
 use sha3::{Digest, Keccak256};
 use std::error::Error;
@@ -111,7 +111,7 @@ async fn handle_connection(
     let insert_statement = postgres_client.prepare("INSERT INTO nodes (ip, tcp_port, id, network_id, fork_id, genesis, client, capabilities) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO UPDATE SET network_id=$4, fork_id = $5, genesis=$6, client=$7, capabilities=$8;").await.unwrap();
 
     let mut nonce = vec![0; 32];
-    rand::thread_rng().fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
     let ephemeral_privkey = SecretKey::new(&mut secp256k1::rand::thread_rng())
         .secret_bytes()
         .to_vec();
@@ -164,7 +164,7 @@ async fn handle_connection(
     };
 
     let payload = message::create_hello_message(hello_message);
-    utils::send_message(payload, stream, &mut egress_mac, &mut egress_aes);
+    let _ = utils::send_message(payload, stream, &mut egress_mac, &mut egress_aes).await;
 
     // Handle HELLO
     let uncrypted_body = match utils::read_message(stream, &mut ingress_mac, &mut ingress_aes).await
@@ -225,7 +225,7 @@ async fn handle_connection(
             latest_hash: network.genesis_hash.to_vec(),
         };
         let payload = message::create_eth69_status_message(reply);
-        utils::send_message(payload, stream, &mut egress_mac, &mut egress_aes);
+        let _ = utils::send_message(payload, stream, &mut egress_mac, &mut egress_aes).await;
 
         (status.network_id, status.fork_id.0, status.genesis)
     } else {
@@ -244,7 +244,7 @@ async fn handle_connection(
             ),
         };
         let payload = message::create_status_message(reply);
-        utils::send_message(payload, stream, &mut egress_mac, &mut egress_aes);
+        let _ = utils::send_message(payload, stream, &mut egress_mac, &mut egress_aes).await;
 
         (status.network_id, status.fork_id.0, status.genesis)
     };
