@@ -1,8 +1,8 @@
 use discv4::Node;
-use log::{error, info};
 use secp256k1::SecretKey;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use tokio_postgres::NoTls;
+use tracing::{error, info};
 
 use janus::config;
 
@@ -16,7 +16,9 @@ const BOOTSTRAP_NODES: &[&str] = &[
 #[tokio::main]
 async fn main() {
     // init logger
-    env_logger::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
 
     let cfg = config::read_config();
 

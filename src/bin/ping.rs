@@ -1,13 +1,15 @@
 use core::time::Duration;
-use log::{error, info};
 use postgres::{Client, NoTls};
 use std::net::{IpAddr, SocketAddr, TcpStream};
+use tracing::{error, info};
 
 use janus::config;
 
 fn main() {
     // init logger
-    env_logger::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
 
     info!("Starting ping");
 

@@ -1,5 +1,4 @@
 use discv4::Node;
-use log::{error, info, warn};
 use rand::RngCore;
 use secp256k1::SecretKey;
 use sha3::{Digest, Keccak256};
@@ -8,6 +7,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
+use tracing::{error, info, warn};
 
 static SERVER_PORT: u16 = 50505;
 
@@ -19,7 +19,9 @@ use janus::utils;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // init logger
-    env_logger::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
 
     info!("Starting server");
 
