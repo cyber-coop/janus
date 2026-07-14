@@ -50,7 +50,8 @@ services:
 
   status:
     image: "janus"
-    build: https://github.com/cyber-coop/eth-node-finder.git
+    # build: https://github.com/cyber-coop/eth-node-finder.git
+    build: .
     container_name: status
     pull_policy: never
     depends_on:

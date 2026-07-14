@@ -1,10 +1,10 @@
-use discv4::Node;
-use log::{error, info};
+use discv4::{Node, NodeId};
 use secp256k1::SecretKey;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::net::{Ipv4Addr, SocketAddrV4};
-use tokio_postgres::NoTls;
+use tracing::info;
 
-use void::config;
+use janus::config;
 
 const BOOTSTRAP_NODES: &[&str] = &[
 	"enode://d860a01f9722d78051619d1e2351aba3f43f943f6f00718d1b9baa4101932a1f5011f16bb2b1bb35db20d6fe28fa0bf09636d26a87d31de9ec6203eeedb1f666@18.138.108.67:30303", // bootnode-aws-ap-southeast-1-001
@@ -16,27 +16,23 @@ const BOOTSTRAP_NODES: &[&str] = &[
 #[tokio::main]
 async fn main() {
     // init logger
-    env_logger::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
 
     let cfg = config::read_config();
 
-    let database_params = format!(
-        "host={} user={} password={} dbname={}",
-        cfg.database.host, cfg.database.user, cfg.database.password, cfg.database.dbname,
-    );
+    let connect_options = PgConnectOptions::new()
+        .host(&cfg.database.host)
+        .username(&cfg.database.user)
+        .password(&cfg.database.password)
+        .database(&cfg.database.dbname);
 
-    let (postgres_client, connection) = tokio_postgres::connect(&database_params, NoTls)
+    let pool = PgPoolOptions::new()
+        .connect_with(connect_options)
         .await
-        .unwrap();
+        .expect("database to be reachable");
     info!("Connection to the database created");
-
-    // The connection object performs the actual communication with the database,
-    // so spawn it off to run on its own.
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            error!("connection error: {}", e);
-        }
-    });
 
     let port = 30303;
     let node = Node::new(
@@ -50,29 +46,22 @@ async fn main() {
     .await
     .unwrap();
 
-    let statement = postgres_client
-        .prepare("INSERT INTO nodes VALUES ($1,$2,$3,$4);")
-        .await
-        .unwrap();
     loop {
-        let target = rand::random();
+        let target = NodeId::random();
         info!("Looking up random target: {}", target);
         let result = node.lookup(target).await;
 
         for entry in result {
             info!("Found node: {:?}", entry);
             // we don't check result because we don't care
-            let _ = postgres_client
-                .execute(
-                    &statement,
-                    &[
-                        &entry.address.to_string(),
-                        &(entry.tcp_port as i32),
-                        &(entry.udp_port as i32),
-                        &entry.id.as_bytes(),
-                    ],
-                )
-                .await;
+            let _ =
+                sqlx::query("INSERT INTO nodes (ip, tcp_port, udp_port, id) VALUES ($1,$2,$3,$4);")
+                    .bind(entry.address.to_string())
+                    .bind(entry.tcp_port as i32)
+                    .bind(entry.udp_port as i32)
+                    .bind(entry.id.as_bytes())
+                    .execute(&pool)
+                    .await;
         }
 
         info!("Current nodes: {}", node.num_nodes());

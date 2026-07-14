@@ -1,14 +1,15 @@
 use aes::cipher::{KeyIvInit, StreamCipher};
 use byteorder::ByteOrder;
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{BigEndian, ReadBytesExt};
 use hmac_sha256::{Hash, HMAC};
 use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use secp256k1::Message;
 use sha3::{Digest, Keccak256};
 use std::error;
-use std::thread;
+use std::io;
 use std::time::Duration;
-use std::{io::prelude::*, net::TcpStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 use super::mac;
 
@@ -16,7 +17,7 @@ pub type Aes128Ctr64BE = ctr::Ctr64BE<aes::Aes128>;
 pub type Aes256Ctr64BE = ctr::Ctr64BE<aes::Aes256>;
 const TIMEOUT_ATTEMPRS: usize = 40;
 
-pub fn ecdh_x(pubkey: &Vec<u8>, privkey: &Vec<u8>) -> Vec<u8> {
+pub fn ecdh_x(pubkey: &[u8], privkey: &[u8]) -> Vec<u8> {
     let sk = k256::ecdsa::SigningKey::from_slice(privkey).unwrap();
     let pk = k256::PublicKey::from_sec1_bytes(pubkey).unwrap();
     let shared_secret =
@@ -34,8 +35,8 @@ pub fn concat_kdf(key_material: Vec<u8>, key_length: usize) -> Vec<u8> {
 
     while counter <= reps {
         counter += 1;
-        let mut tmp: Vec<u8> = vec![];
-        tmp.write_u32::<BigEndian>(counter as u32).unwrap();
+        let mut tmp = [0u8; 4];
+        BigEndian::write_u32(&mut tmp, counter as u32);
         let mut hash = Hash::new();
         hash.update(tmp);
         hash.update(&key_material);
@@ -48,11 +49,7 @@ pub fn concat_kdf(key_material: Vec<u8>, key_length: usize) -> Vec<u8> {
     return result[0..key_length].to_vec();
 }
 
-pub fn encrypt_message(
-    remote_public: &Vec<u8>,
-    mut data: Vec<u8>,
-    shared_mac_data: &Vec<u8>,
-) -> Vec<u8> {
+pub fn encrypt_message(remote_public: &[u8], mut data: Vec<u8>, shared_mac_data: &[u8]) -> Vec<u8> {
     // let privkey = k256::SecretKey::random(&mut OsRng);
     let privkey = k256::SecretKey::from_slice(&[1_u8; 32]).unwrap();
     let x = ecdh_x(remote_public, &privkey.to_bytes().to_vec());
@@ -61,10 +58,10 @@ pub fn encrypt_message(
     let m_key = Hash::hash(&key[16..32]); // mac key
 
     // encrypt
-    let mut iv = [0u8; 16];
+    let iv = [0u8; 16];
     // OsRng.fill_bytes(&mut iv);
 
-    let mut cipher = Aes128Ctr64BE::new(e_key.into(), &iv.into());
+    let mut cipher = Aes128Ctr64BE::new(e_key.try_into().unwrap(), &iv.into());
     cipher.apply_keystream(&mut data);
 
     let mut data_iv: Vec<u8> = vec![];
@@ -79,7 +76,7 @@ pub fn encrypt_message(
 
     let public_key = privkey.public_key();
     let vkey = k256::ecdsa::VerifyingKey::from(public_key);
-    let uncompressed_pubkey_bytes = vkey.to_encoded_point(false).to_bytes();
+    let uncompressed_pubkey_bytes = vkey.to_sec1_point(false).to_bytes();
 
     let mut result: Vec<u8> = vec![];
 
@@ -90,11 +87,7 @@ pub fn encrypt_message(
     return result;
 }
 
-pub fn decrypt_message(
-    payload: &Vec<u8>,
-    shared_mac_data: &Vec<u8>,
-    private_key: &Vec<u8>,
-) -> Vec<u8> {
+pub fn decrypt_message(payload: &[u8], shared_mac_data: &[u8], private_key: &[u8]) -> Vec<u8> {
     assert_eq!(payload[0], 0x04);
 
     let public_key = payload[0..65].to_vec();
@@ -119,7 +112,7 @@ pub fn decrypt_message(
     // decrypt data
     let iv = &data_iv[0..16];
     let mut encrypted_data = data_iv[16..].to_vec();
-    let mut decipher = Aes128Ctr64BE::new(e_key.into(), iv.into());
+    let mut decipher = Aes128Ctr64BE::new(e_key.try_into().unwrap(), iv.try_into().unwrap());
     // decipher encrypted_data and return result in encrypted_data variable
     decipher.apply_keystream(&mut encrypted_data);
 
@@ -127,11 +120,11 @@ pub fn decrypt_message(
 }
 
 pub fn create_auth_eip8(
-    remote_id: &Vec<u8>,
-    private_key: &Vec<u8>,
-    nonce: &Vec<u8>,
-    ephemeral_privkey: &Vec<u8>,
-    pad: &Vec<u8>,
+    remote_id: &[u8],
+    private_key: &[u8],
+    nonce: &[u8],
+    ephemeral_privkey: &[u8],
+    pad: &[u8],
 ) -> Vec<u8> {
     let mut auth_message: Vec<u8> = vec![];
     // Add 04 to the remote ID to get the remote public key
@@ -151,7 +144,7 @@ pub fn create_auth_eip8(
     let ephemeral_signing_key = secp256k1::SecretKey::from_slice(&ephemeral_privkey).unwrap();
     let (recid, sig) = secp256k1::SECP256K1
         .sign_ecdsa_recoverable(
-            &secp256k1::Message::from_slice(&msg_hash).unwrap(),
+            &secp256k1::Message::from_digest_slice(&msg_hash).unwrap(),
             &ephemeral_signing_key,
         )
         .serialize_compact();
@@ -165,7 +158,7 @@ pub fn create_auth_eip8(
     // Initialize array with empty vectors
     let sk = k256::ecdsa::SigningKey::from_slice(&private_key).unwrap();
     let vkey = sk.verifying_key();
-    let uncompressed_pubkey_bytes = vkey.to_encoded_point(false).to_bytes();
+    let uncompressed_pubkey_bytes = vkey.to_sec1_point(false).to_bytes();
 
     let data = vec![
         rsv_sig,
@@ -182,46 +175,38 @@ pub fn create_auth_eip8(
     auth_message.extend(pad);
 
     let overhead_length = 113;
-    let mut shared_mac_data: Vec<u8> = vec![];
-    shared_mac_data
-        .write_u16::<BigEndian>((auth_message.len() + overhead_length) as u16)
-        .unwrap();
+    let shared_mac_data = ((auth_message.len() + overhead_length) as u16).to_be_bytes();
 
     // Encrypt message
     let enrcyped_auth_message = encrypt_message(&remote_public_key, auth_message, &shared_mac_data);
 
-    let init_msg = [shared_mac_data, enrcyped_auth_message].concat();
+    let init_msg = [shared_mac_data.to_vec(), enrcyped_auth_message].concat();
 
     return init_msg;
 }
 
-pub fn read_auth_eip8(stream: &mut TcpStream) -> Result<(Vec<u8>, Vec<u8>), Box<dyn error::Error>> {
-    let mut buf = [0u8; 2];
-    let _size = stream.read_exact(&mut buf)?;
+pub async fn read_auth_eip8(
+    stream: &mut TcpStream,
+) -> Result<(Vec<u8>, Vec<u8>), Box<dyn error::Error>> {
+    let timeout = Duration::from_millis(100 * TIMEOUT_ATTEMPRS as u64);
 
-    let size_expected = buf.as_slice().read_u16::<BigEndian>().unwrap() as usize;
+    let mut buf = [0u8; 2];
+    tokio::time::timeout(timeout, stream.read_exact(&mut buf)).await??;
+
+    let size_expected = BigEndian::read_u16(&buf) as usize;
     let shared_mac_data = &buf[0..2];
 
-    let mut payload = vec![0u8; size_expected.into()];
-    let mut attempts = 0;
-    while stream.peek(&mut payload)? < size_expected {
-        thread::sleep(Duration::from_millis(100));
-
-        attempts = attempts + 1;
-        if attempts >= TIMEOUT_ATTEMPRS {
-            return Err("Timed out".into());
-        }
-    }
-    stream.read_exact(&mut payload)?;
+    let mut payload = vec![0u8; size_expected];
+    tokio::time::timeout(timeout, stream.read_exact(&mut payload)).await??;
 
     Ok((payload, shared_mac_data.to_vec()))
 }
 
 pub fn verify_auth_eip8(
-    payload: &Vec<u8>,
-    shared_mac_data: &Vec<u8>,
-    private_key: &Vec<u8>,
-    ephemeral_privkey: &Vec<u8>,
+    payload: &[u8],
+    shared_mac_data: &[u8],
+    private_key: &[u8],
+    ephemeral_privkey: &[u8],
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let decrypted = decrypt_message(payload, shared_mac_data, private_key);
 
@@ -248,7 +233,7 @@ pub fn verify_auth_eip8(
         .map(|(&x1, &x2)| x1 ^ x2)
         .collect();
 
-    let msg = Message::from_slice(&msg_hash).unwrap();
+    let msg = Message::from_digest_slice(&msg_hash).unwrap();
     let remote_ephemeral_public_key = sig.recover(&msg).unwrap().serialize_uncompressed().to_vec();
 
     let ephemeral_shared_secret = ecdh_x(&remote_ephemeral_public_key, ephemeral_privkey);
@@ -257,11 +242,11 @@ pub fn verify_auth_eip8(
 }
 
 pub fn create_auth_non_eip8(
-    remote_id: &Vec<u8>,
-    private_key: &Vec<u8>,
-    nonce: &Vec<u8>,
-    ephemeral_privkey: &Vec<u8>,
-    ephemeral_pubkey: &Vec<u8>,
+    remote_id: &[u8],
+    private_key: &[u8],
+    nonce: &[u8],
+    ephemeral_privkey: &[u8],
+    ephemeral_pubkey: &[u8],
 ) -> Vec<u8> {
     // Add 04 to the remote ID to get the remote public key
     let remote_public_key: Vec<u8> = [vec![4], remote_id.to_vec()].concat();
@@ -280,7 +265,7 @@ pub fn create_auth_non_eip8(
     let ephemeral_signing_key = secp256k1::SecretKey::from_slice(&ephemeral_privkey).unwrap();
     let (recid, sig) = secp256k1::SECP256K1
         .sign_ecdsa_recoverable(
-            &secp256k1::Message::from_slice(&msg_hash).unwrap(),
+            &secp256k1::Message::from_digest_slice(&msg_hash).unwrap(),
             &ephemeral_signing_key,
         )
         .serialize_compact();
@@ -288,7 +273,7 @@ pub fn create_auth_non_eip8(
     // Initialize array with empty vectors
     let sk = k256::ecdsa::SigningKey::from_slice(&private_key).unwrap();
     let vkey = sk.verifying_key();
-    let uncompressed_pubkey_bytes = vkey.to_encoded_point(false).to_bytes();
+    let uncompressed_pubkey_bytes = vkey.to_sec1_point(false).to_bytes();
 
     let mut hasher = Keccak256::new();
     hasher.update(&[vec![4], ephemeral_pubkey.to_vec()].concat());
@@ -359,7 +344,7 @@ pub fn setup_frame(
 
 // NOTE: could be [u8; 32]
 pub fn parse_header(
-    data: &Vec<u8>,
+    data: &[u8],
     ingress_mac: &mut mac::MAC,
     ingress_aes: &mut Aes256Ctr64BE,
 ) -> usize {
@@ -440,109 +425,69 @@ pub fn create_body(
     return [body_message.to_vec(), tag].concat().to_vec();
 }
 
-pub fn send_message(
+pub async fn send_message(
     msg: Vec<u8>,
-    stream: &mut std::net::TcpStream,
+    stream: &mut TcpStream,
     egress_mac: &mut mac::MAC,
     egress_aes: &mut Aes256Ctr64BE,
-) {
+) -> Result<(), Box<dyn error::Error>> {
     let header = create_header(msg.len(), egress_mac, egress_aes);
-
-    stream.write(&header).unwrap();
-    stream.flush().unwrap();
-
     let body = create_body(msg, egress_mac, egress_aes);
 
-    stream.write(&body).unwrap();
-    stream.flush().unwrap();
+    stream.write_all(&[header, body].concat()).await?;
+
+    Ok(())
 }
 
-pub fn read_message(
-    stream: &mut std::net::TcpStream,
+pub async fn read_message(
+    stream: &mut TcpStream,
     ingress_mac: &mut mac::MAC,
     ingress_aes: &mut Aes256Ctr64BE,
 ) -> Result<Vec<u8>, Box<dyn error::Error>> {
     let mut buf = [0u8; 32];
-    let res = stream.read_exact(&mut buf)?;
+    tokio::time::timeout(Duration::from_secs(30), stream.read_exact(&mut buf))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "read header timeout"))??;
 
-    let next_size = parse_header(&buf.to_vec(), ingress_mac, ingress_aes);
+    assert_eq!(buf.len(), 32);
 
-    // Message payload
-    let mut body: Vec<u8> = vec![];
+    let next_size = parse_header(buf.as_ref(), ingress_mac, ingress_aes);
     let body_size = get_body_len(next_size);
 
-    let mut attempts = 0;
-
-    // we have this loop to be sure we have received the complete payload
-    while body.len() < body_size {
-        let mut buf: Vec<u8> = vec![0; body_size - body.len()];
-        let l = stream.read(&mut buf)?;
-
-        body.extend(&buf[0..l]);
-        thread::sleep(Duration::from_millis(100));
-
-        attempts = attempts + 1;
-        if attempts >= TIMEOUT_ATTEMPRS {
-            return Err("Timed out".into());
-        }
-    }
+    let mut body = vec![0u8; body_size];
+    tokio::time::timeout(Duration::from_secs(30), stream.read_exact(&mut body))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "read body timeout"))??;
 
     assert_eq!(body.len(), body_size);
 
-    let uncrypted_body = parse_body(&body, ingress_mac, ingress_aes, next_size);
-
-    return Ok(uncrypted_body);
+    Ok(parse_body(&body, ingress_mac, ingress_aes, next_size))
 }
 
-pub fn send_eip8_auth_message(
-    msg: &Vec<u8>,
-    stream: &mut std::net::TcpStream,
-) -> Result<(), Box<dyn error::Error>> {
-    stream.write(&msg)?;
-    stream.flush()?;
-
-    Ok(())
-}
-
-pub fn send_ack_message(
-    msg: &Vec<u8>,
-    stream: &mut std::net::TcpStream,
-) -> Result<(), Box<dyn error::Error>> {
-    stream.write(&msg)?;
-    stream.flush()?;
-
-    Ok(())
-}
-
-pub fn read_ack_message(
-    stream: &mut std::net::TcpStream,
+pub async fn read_ack_message(
+    stream: &mut TcpStream,
 ) -> Result<(Vec<u8>, Vec<u8>), Box<dyn error::Error>> {
+    let timeout = Duration::from_millis(100 * TIMEOUT_ATTEMPRS as u64);
+
     let mut buf = [0u8; 2];
-    let _size = stream.read_exact(&mut buf)?;
+    tokio::time::timeout(timeout, stream.read_exact(&mut buf)).await??;
 
-    let size_expected = buf.as_slice().read_u16::<BigEndian>().unwrap() as usize;
-    let shared_mac_data = &buf[0..2];
+    let size_expected = BigEndian::read_u16(&buf) as usize;
+    let shared_mac_data = buf[0..2].to_vec();
 
-    let mut payload = vec![0u8; size_expected.into()];
-    let mut attempts = 0;
-    while stream.peek(&mut payload)? < size_expected {
-        thread::sleep(Duration::from_millis(100));
+    let mut payload = vec![0u8; size_expected];
+    tokio::time::timeout(timeout, stream.read_exact(&mut payload)).await??;
 
-        attempts = attempts + 1;
-        if attempts >= TIMEOUT_ATTEMPRS {
-            return Err("Timed out".into());
-        }
-    }
-    stream.read_exact(&mut payload)?;
+    assert_eq!(payload.len(), size_expected);
 
-    Ok((payload, shared_mac_data.to_vec()))
+    Ok((payload, shared_mac_data))
 }
 
 pub fn create_ack(
-    remote_id: &Vec<u8>,
-    nonce: &Vec<u8>,
-    ephemeral_privkey: &Vec<u8>,
-    pad: &Vec<u8>,
+    remote_id: &[u8],
+    nonce: &[u8],
+    ephemeral_privkey: &[u8],
+    _pad: &[u8],
 ) -> Vec<u8> {
     let mut ack_message: Vec<u8> = vec![];
     // Add 04 to the remote ID to get the remote public key
@@ -565,26 +510,23 @@ pub fn create_ack(
 
     // Concat padding to the encoded data
     ack_message.extend(encoded_data.to_vec());
-    /// ack_message.extend(pad);
+    // ack_message.extend(pad);
     let overhead_length = 113;
-    let mut shared_mac_data: Vec<u8> = vec![];
-    shared_mac_data
-        .write_u16::<BigEndian>((ack_message.len() + overhead_length) as u16)
-        .unwrap();
+    let shared_mac_data = ((ack_message.len() + overhead_length) as u16).to_be_bytes();
 
     // Encrypt message
     let enrcyped_ack_message = encrypt_message(&remote_public_key, ack_message, &shared_mac_data);
 
-    let init_msg = [shared_mac_data, enrcyped_ack_message].concat();
+    let init_msg = [shared_mac_data.to_vec(), enrcyped_ack_message].concat();
 
     return init_msg;
 }
 
 pub fn handle_ack_message(
-    payload: &Vec<u8>,
-    shared_mac_data: &Vec<u8>,
-    private_key: &Vec<u8>,
-    ephemeral_privkey: &Vec<u8>,
+    payload: &[u8],
+    shared_mac_data: &[u8],
+    private_key: &[u8],
+    ephemeral_privkey: &[u8],
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let decrypted = decrypt_message(payload, shared_mac_data, private_key);
 

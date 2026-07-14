@@ -8,5 +8,10 @@ CREATE TABLE IF NOT EXISTS nodes (
     genesis BYTEA,
     client TEXT,
     capabilities JSON,
-    last_ping_timestamp TIMESTAMP DEFAULT NULL
+    last_ping_timestamp TIMESTAMP DEFAULT NULL,
+    connection_direction TEXT CHECK (connection_direction IN ('incoming', 'outgoing'))
 );
+
+ALTER TABLE nodes
+    ADD COLUMN IF NOT EXISTS connection_direction TEXT
+    CHECK (connection_direction IN ('incoming', 'outgoing'));
