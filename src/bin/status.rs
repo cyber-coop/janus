@@ -51,8 +51,12 @@ async fn main() {
             // Connect to node
             let ip_addr: IpAddr = ip.parse().unwrap();
             let addr = SocketAddr::from((ip_addr, port as u16));
-            let target = format!("{}@{}", hex::encode(&remote_id), addr);
-            let span = tracing::info_span!("node", node = %target);
+            let span = tracing::info_span!(
+                "node",
+                remote_id = %hex::encode(&remote_id),
+                ip = %ip,
+                tcp_port = port,
+            );
 
             async move {
                 let mut stream = match TcpStream::connect(&addr).await {
@@ -157,7 +161,10 @@ async fn main() {
 
                 if uncrypted_body[0] == 0x01 {
                     // we have a disconnect message unfortunately
-                    error!("Disconnect {}", hex::encode(uncrypted_body[1..].to_vec()));
+                    let reason = message::parse_disconnect_message(uncrypted_body[1..].to_vec())
+                        .map(message::disconnect_reason_str)
+                        .unwrap_or("Unknown disconnect reason");
+                    error!("Disconnect: {}", reason);
                     return;
                 }
 
@@ -225,7 +232,10 @@ async fn main() {
 
                 if uncrypted_body[0] == 0x01 {
                     // we have a disconnect message unfortunately
-                    error!("Disconnect {}", hex::encode(uncrypted_body[1..].to_vec()));
+                    let reason = message::parse_disconnect_message(uncrypted_body[1..].to_vec())
+                        .map(message::disconnect_reason_str)
+                        .unwrap_or("Unknown disconnect reason");
+                    error!("Disconnect: {}", reason);
                     return;
                 }
 

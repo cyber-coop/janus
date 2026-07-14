@@ -99,12 +99,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+#[tracing::instrument(
+    skip(stream, pool, private_key, network),
+    fields(remote_id = tracing::field::Empty, ip = tracing::field::Empty, tcp_port = tracing::field::Empty)
+)]
 async fn handle_connection(
     stream: &mut TcpStream,
     pool: &PgPool,
     private_key: &Vec<u8>,
     network: networks::Network,
 ) -> Result<(), Box<dyn Error>> {
+    let peer_addr = stream.peer_addr().expect("to have a peer address");
+    let span = tracing::Span::current();
+    span.record("ip", peer_addr.ip().to_string());
+    span.record("tcp_port", peer_addr.port());
+
     let mut nonce = vec![0; 32];
     rand::rng().fill_bytes(&mut nonce);
     let ephemeral_privkey = SecretKey::new(&mut secp256k1::rand::thread_rng())
@@ -116,6 +125,7 @@ async fn handle_connection(
     let (payload, shared_mac_data) = utils::read_auth_eip8(stream).await?;
     let (remote_id, remote_nonce, ephemeral_shared_secret) =
         utils::verify_auth_eip8(&payload, &shared_mac_data, private_key, &ephemeral_privkey);
+    span.record("remote_id", hex::encode(&remote_id));
 
     // Send Ack message
     let init_msg = utils::create_ack(&remote_id, &nonce, &ephemeral_privkey, &pad);
@@ -172,7 +182,10 @@ async fn handle_connection(
 
     if uncrypted_body[0] == 0x01 {
         // we have a disconnect message unfortunately
-        error!("Disconnect {}", hex::encode(uncrypted_body[1..].to_vec()));
+        let reason = message::parse_disconnect_message(uncrypted_body[1..].to_vec())
+            .map(message::disconnect_reason_str)
+            .unwrap_or("Unknown disconnect reason");
+        error!("Disconnect: {}", reason);
         return Err("Received disconnect message".into());
     }
 
@@ -198,7 +211,10 @@ async fn handle_connection(
         .await
         .unwrap();
     if uncrypted_body[0] == 0x01 {
-        warn!("Disconnect message : {}", hex::encode(&uncrypted_body));
+        let reason = message::parse_disconnect_message(uncrypted_body[1..].to_vec())
+            .map(message::disconnect_reason_str)
+            .unwrap_or("Unknown disconnect reason");
+        warn!("Disconnect: {}", reason);
 
         return Err("Disconnected peer".into());
     }
@@ -246,11 +262,10 @@ async fn handle_connection(
 
     info!("Sending STATUS message done");
 
-    let address = stream.peer_addr().expect("to have a peer address");
     let cap: Vec<(String, u32)> = serde_json::from_str(&capabilities).unwrap();
     sqlx::query("INSERT INTO nodes (ip, tcp_port, id, network_id, fork_id, genesis, client, capabilities) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO UPDATE SET network_id=$4, fork_id = $5, genesis=$6, client=$7, capabilities=$8;")
-        .bind(address.ip().to_string())
-        .bind(address.port() as i32)
+        .bind(peer_addr.ip().to_string())
+        .bind(peer_addr.port() as i32)
         .bind(&remote_id)
         .bind(network_id as i64)
         .bind(&fork_id)

@@ -1,6 +1,38 @@
 const BASE_PROTOCOL_OFFSET: u8 = 16;
 pub const BASE_PROTOCOL_VERSION: u32 = 5;
 
+// https://github.com/ethereum/devp2p/blob/master/rlpx.md#disconnect-0x01
+pub fn parse_disconnect_message(payload: Vec<u8>) -> Option<u8> {
+    let mut dec = snap::raw::Decoder::new();
+    let message = dec.decompress_vec(&payload).ok()?;
+
+    let r = rlp::Rlp::new(&message);
+    if !r.is_list() || r.is_empty() {
+        return None;
+    }
+
+    r.at(0).ok()?.as_val().ok()
+}
+
+pub fn disconnect_reason_str(reason: u8) -> &'static str {
+    match reason {
+        0x00 => "Disconnect requested",
+        0x01 => "TCP sub-system error",
+        0x02 => "Breach of protocol",
+        0x03 => "Useless peer",
+        0x04 => "Too many peers",
+        0x05 => "Already connected",
+        0x06 => "Incompatible P2P protocol version",
+        0x07 => "Null node identity received",
+        0x08 => "Client quitting",
+        0x09 => "Unexpected identity",
+        0x0A => "Identity is the same as this node",
+        0x0B => "Ping timeout",
+        0x10 => "Subprotocol-specific reason",
+        _ => "Unknown disconnect reason",
+    }
+}
+
 pub fn create_ping_message() -> Vec<u8> {
     let payload = rlp::encode_list(&[0_u8; 0]);
     let code: Vec<u8> = vec![0x02];
