@@ -87,11 +87,7 @@ pub fn encrypt_message(remote_public: &[u8], mut data: Vec<u8>, shared_mac_data:
     return result;
 }
 
-pub fn decrypt_message(
-    payload: &Vec<u8>,
-    shared_mac_data: &Vec<u8>,
-    private_key: &Vec<u8>,
-) -> Vec<u8> {
+pub fn decrypt_message(payload: &[u8], shared_mac_data: &[u8], private_key: &[u8]) -> Vec<u8> {
     assert_eq!(payload[0], 0x04);
 
     let public_key = payload[0..65].to_vec();
@@ -124,11 +120,11 @@ pub fn decrypt_message(
 }
 
 pub fn create_auth_eip8(
-    remote_id: &Vec<u8>,
-    private_key: &Vec<u8>,
-    nonce: &Vec<u8>,
-    ephemeral_privkey: &Vec<u8>,
-    pad: &Vec<u8>,
+    remote_id: &[u8],
+    private_key: &[u8],
+    nonce: &[u8],
+    ephemeral_privkey: &[u8],
+    pad: &[u8],
 ) -> Vec<u8> {
     let mut auth_message: Vec<u8> = vec![];
     // Add 04 to the remote ID to get the remote public key
@@ -207,10 +203,10 @@ pub async fn read_auth_eip8(
 }
 
 pub fn verify_auth_eip8(
-    payload: &Vec<u8>,
-    shared_mac_data: &Vec<u8>,
-    private_key: &Vec<u8>,
-    ephemeral_privkey: &Vec<u8>,
+    payload: &[u8],
+    shared_mac_data: &[u8],
+    private_key: &[u8],
+    ephemeral_privkey: &[u8],
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let decrypted = decrypt_message(payload, shared_mac_data, private_key);
 
@@ -246,11 +242,11 @@ pub fn verify_auth_eip8(
 }
 
 pub fn create_auth_non_eip8(
-    remote_id: &Vec<u8>,
-    private_key: &Vec<u8>,
-    nonce: &Vec<u8>,
-    ephemeral_privkey: &Vec<u8>,
-    ephemeral_pubkey: &Vec<u8>,
+    remote_id: &[u8],
+    private_key: &[u8],
+    nonce: &[u8],
+    ephemeral_privkey: &[u8],
+    ephemeral_pubkey: &[u8],
 ) -> Vec<u8> {
     // Add 04 to the remote ID to get the remote public key
     let remote_public_key: Vec<u8> = [vec![4], remote_id.to_vec()].concat();
@@ -488,10 +484,10 @@ pub async fn read_ack_message(
 }
 
 pub fn create_ack(
-    remote_id: &Vec<u8>,
-    nonce: &Vec<u8>,
-    ephemeral_privkey: &Vec<u8>,
-    _pad: &Vec<u8>,
+    remote_id: &[u8],
+    nonce: &[u8],
+    ephemeral_privkey: &[u8],
+    _pad: &[u8],
 ) -> Vec<u8> {
     let mut ack_message: Vec<u8> = vec![];
     // Add 04 to the remote ID to get the remote public key
@@ -527,10 +523,10 @@ pub fn create_ack(
 }
 
 pub fn handle_ack_message(
-    payload: &Vec<u8>,
-    shared_mac_data: &Vec<u8>,
-    private_key: &Vec<u8>,
-    ephemeral_privkey: &Vec<u8>,
+    payload: &[u8],
+    shared_mac_data: &[u8],
+    private_key: &[u8],
+    ephemeral_privkey: &[u8],
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let decrypted = decrypt_message(payload, shared_mac_data, private_key);
 

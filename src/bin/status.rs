@@ -161,7 +161,7 @@ async fn main() {
 
                 if uncrypted_body[0] == 0x01 {
                     // we have a disconnect message unfortunately
-                    let reason = message::parse_disconnect_message(uncrypted_body[1..].to_vec())
+                    let reason = message::parse_disconnect_message(&uncrypted_body[1..])
                         .map(message::disconnect_reason_str)
                         .unwrap_or("Unknown disconnect reason");
                     error!("Disconnect: {}", reason);
@@ -170,7 +170,7 @@ async fn main() {
 
                 // Should be HELLO
                 assert_eq!(0x80, uncrypted_body[0]);
-                let hello_message = message::parse_hello_message(uncrypted_body[1..].to_vec());
+                let hello_message = message::parse_hello_message(&uncrypted_body[1..]);
 
                 let capabilities = serde_json::to_string(&hello_message.capabilities).unwrap();
 
@@ -178,7 +178,7 @@ async fn main() {
                 let mut version = 0;
                 for capability in &hello_message.capabilities {
                     if capability.0.to_string() == "eth" {
-                        if capability.1 > version {
+                        if capability.1 > version && capability.1 < 70 {
                             version = capability.1;
                         }
                     }
@@ -217,6 +217,56 @@ async fn main() {
 
                 /******************
                  *
+                 *  Send STATUS message
+                 *
+                 *  We send ours right away instead of waiting to receive
+                 *  theirs first: some implementations wait for our STATUS
+                 *  before sending their own, and will disconnect with a
+                 *  timeout error if we wait too.
+                 *
+                 ******************/
+
+                let genesis_hash = [
+                    212, 229, 103, 64, 248, 118, 174, 248, 192, 16, 184, 106, 64, 213, 245, 103, 69,
+                    161, 24, 208, 144, 106, 52, 230, 154, 236, 140, 13, 177, 203, 143, 163,
+                ];
+
+                info!("Sending STATUS message");
+                if version >= 69 {
+                    let reply = message::Status69 {
+                        version,
+                        network_id: 1,
+                        genesis: genesis_hash.to_vec(),
+                        fork_id: (vec![252, 100, 236, 4], 1150000),
+                        earliest: 0,
+                        latest: 0,
+                        latest_hash: genesis_hash.to_vec(),
+                    };
+                    let _ = utils::send_message(
+                        message::create_eth69_status_message(reply),
+                        &mut stream,
+                        &mut egress_mac,
+                        &mut egress_aes,
+                    ).await;
+                } else {
+                    let reply = message::Status {
+                        version,
+                        network_id: 1,
+                        td: vec![0],
+                        blockhash: genesis_hash.to_vec(),
+                        genesis: genesis_hash.to_vec(),
+                        fork_id: (vec![252, 100, 236, 4], 1150000),
+                    };
+                    let _ = utils::send_message(
+                        message::create_status_message(reply),
+                        &mut stream,
+                        &mut egress_mac,
+                        &mut egress_aes,
+                    ).await;
+                }
+
+                /******************
+                 *
                  *  Handle STATUS message
                  *
                  ******************/
@@ -232,57 +282,21 @@ async fn main() {
 
                 if uncrypted_body[0] == 0x01 {
                     // we have a disconnect message unfortunately
-                    let reason = message::parse_disconnect_message(uncrypted_body[1..].to_vec())
+                    let reason = message::parse_disconnect_message(&uncrypted_body[1..])
                         .map(message::disconnect_reason_str)
                         .unwrap_or("Unknown disconnect reason");
                     error!("Disconnect: {}", reason);
                     return;
                 }
 
-                let genesis_hash = [
-                    212, 229, 103, 64, 248, 118, 174, 248, 192, 16, 184, 106, 64, 213, 245, 103, 69,
-                    161, 24, 208, 144, 106, 52, 230, 154, 236, 140, 13, 177, 203, 143, 163,
-                ];
-
                 let (their_network_id, their_fork_id, their_genesis) = if version >= 69 {
-                    let their_status = message::parse_eth69_status_message(uncrypted_body[1..].to_vec()).unwrap();
+                    let their_status = message::parse_eth69_status_message(&uncrypted_body[1..]).unwrap();
                     info!("network_id = {:?}", &their_status.network_id);
-
-                    let reply = message::Status69 {
-                        version,
-                        network_id: 1,
-                        genesis: genesis_hash.to_vec(),
-                        fork_id: (vec![159, 61, 34, 84], 0),
-                        earliest: 0,
-                        latest: 0,
-                        latest_hash: genesis_hash.to_vec(),
-                    };
-                    let _ = utils::send_message(
-                        message::create_eth69_status_message(reply),
-                        &mut stream,
-                        &mut egress_mac,
-                        &mut egress_aes,
-                    ).await;
 
                     (their_status.network_id, their_status.fork_id.0, their_status.genesis)
                 } else {
-                    let their_status = message::parse_status_message(uncrypted_body[1..].to_vec()).unwrap();
+                    let their_status = message::parse_status_message(&uncrypted_body[1..]).unwrap();
                     info!("network_id = {:?}", &their_status.network_id);
-
-                    let reply = message::Status {
-                        version,
-                        network_id: 1,
-                        td: vec![0],
-                        blockhash: genesis_hash.to_vec(),
-                        genesis: genesis_hash.to_vec(),
-                        fork_id: (vec![159, 61, 34, 84], 0),
-                    };
-                    let _ = utils::send_message(
-                        message::create_status_message(reply),
-                        &mut stream,
-                        &mut egress_mac,
-                        &mut egress_aes,
-                    ).await;
 
                     (their_status.network_id, their_status.fork_id.0, their_status.genesis)
                 };

@@ -2,9 +2,9 @@ const BASE_PROTOCOL_OFFSET: u8 = 16;
 pub const BASE_PROTOCOL_VERSION: u32 = 5;
 
 // https://github.com/ethereum/devp2p/blob/master/rlpx.md#disconnect-0x01
-pub fn parse_disconnect_message(payload: Vec<u8>) -> Option<u8> {
+pub fn parse_disconnect_message(payload: &[u8]) -> Option<u8> {
     let mut dec = snap::raw::Decoder::new();
-    let message = dec.decompress_vec(&payload).ok()?;
+    let message = dec.decompress_vec(payload).ok()?;
 
     let r = rlp::Rlp::new(&message);
     if !r.is_list() || r.is_empty() {
@@ -87,7 +87,7 @@ pub fn create_status_message(status: Status) -> Vec<u8> {
     return [code.to_vec(), payload_compressed].concat();
 }
 
-pub fn parse_status_message(payload: Vec<u8>) -> Option<Status> {
+pub fn parse_status_message(payload: &[u8]) -> Option<Status> {
     let mut dec = snap::raw::Decoder::new();
     let message = dec.decompress_vec(&payload).unwrap();
 
@@ -156,9 +156,9 @@ pub fn create_eth69_status_message(status: Status69) -> Vec<u8> {
     return [code.to_vec(), payload_compressed].concat();
 }
 
-pub fn parse_eth69_status_message(payload: Vec<u8>) -> Option<Status69> {
+pub fn parse_eth69_status_message(payload: &[u8]) -> Option<Status69> {
     let mut dec = snap::raw::Decoder::new();
-    let message = dec.decompress_vec(&payload).unwrap();
+    let message = dec.decompress_vec(payload).unwrap();
 
     let r = rlp::Rlp::new(&message);
     assert!(r.is_list());
@@ -223,8 +223,8 @@ pub fn create_hello_message(hello: HelloMessage) -> Vec<u8> {
     return message;
 }
 
-pub fn parse_hello_message(payload: Vec<u8>) -> HelloMessage {
-    let r = rlp::Rlp::new(&payload);
+pub fn parse_hello_message(payload: &[u8]) -> HelloMessage {
+    let r = rlp::Rlp::new(payload);
     assert!(r.is_list());
 
     let protocol_version: u32 = r.at(0).unwrap().as_val().unwrap();

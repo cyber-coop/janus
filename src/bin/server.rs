@@ -12,10 +12,9 @@ use tracing::{error, info, warn};
 
 static SERVER_PORT: u16 = 50505;
 
-use janus::config;
 use janus::message;
-use janus::networks;
 use janus::utils;
+use janus::{bootstrap, config};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _node = Node::new(
         SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, SERVER_PORT).into(),
         private_key,
-        networks::BOOTSTRAP_NODES
+        bootstrap::BOOTSTRAP_NODES
             .iter()
             .map(|v| v.parse().unwrap())
             .collect(),
@@ -83,14 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let pool = pool.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_connection(
-                &mut socket,
-                &pool,
-                &private_key.to_vec(),
-                networks::Network::ETHEREUM_MAINNET,
-            )
-            .await
-            {
+            if let Err(err) = handle_connection(&mut socket, &pool, &private_key).await {
                 error!("Failed to handle connection request : {}", err.to_string());
             };
         });
@@ -100,14 +92,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[tracing::instrument(
-    skip(stream, pool, private_key, network),
+    skip(stream, pool, private_key),
     fields(remote_id = tracing::field::Empty, ip = tracing::field::Empty, tcp_port = tracing::field::Empty)
 )]
 async fn handle_connection(
     stream: &mut TcpStream,
     pool: &PgPool,
-    private_key: &Vec<u8>,
-    network: networks::Network,
+    private_key: &[u8],
 ) -> Result<(), Box<dyn Error>> {
     let peer_addr = stream.peer_addr().expect("to have a peer address");
     let span = tracing::Span::current();
@@ -182,7 +173,7 @@ async fn handle_connection(
 
     if uncrypted_body[0] == 0x01 {
         // we have a disconnect message unfortunately
-        let reason = message::parse_disconnect_message(uncrypted_body[1..].to_vec())
+        let reason = message::parse_disconnect_message(&uncrypted_body[1..])
             .map(message::disconnect_reason_str)
             .unwrap_or("Unknown disconnect reason");
         error!("Disconnect: {}", reason);
@@ -191,7 +182,7 @@ async fn handle_connection(
 
     // Should be HELLO
     assert_eq!(0x80, uncrypted_body[0]);
-    let hello = message::parse_hello_message(uncrypted_body[1..].to_vec());
+    let hello = message::parse_hello_message(&uncrypted_body[1..]);
     info!("{:?}", &hello);
 
     let capabilities = serde_json::to_string(&hello.capabilities).unwrap();
@@ -200,7 +191,7 @@ async fn handle_connection(
     let mut version = 0;
     for capability in &hello.capabilities {
         if capability.0.to_string() == "eth" {
-            if capability.1 > version {
+            if capability.1 > version && capability.1 < 70 {
                 version = capability.1;
             }
         }
@@ -211,7 +202,7 @@ async fn handle_connection(
         .await
         .unwrap();
     if uncrypted_body[0] == 0x01 {
-        let reason = message::parse_disconnect_message(uncrypted_body[1..].to_vec())
+        let reason = message::parse_disconnect_message(&uncrypted_body[1..])
             .map(message::disconnect_reason_str)
             .unwrap_or("Unknown disconnect reason");
         warn!("Disconnect: {}", reason);
@@ -220,39 +211,50 @@ async fn handle_connection(
     }
 
     let (network_id, fork_id, genesis) = if version >= 69 {
-        let status = message::parse_eth69_status_message(uncrypted_body[1..].to_vec()).unwrap();
+        let status = message::parse_eth69_status_message(&uncrypted_body[1..]).unwrap();
         info!("Found eth69 status {:?}", &status);
 
+        // Ethereum mainnet network info
         let reply = message::Status69 {
             version,
-            network_id: network.network_id,
-            genesis: network.genesis_hash.to_vec(),
-            fork_id: (
-                network.fork_id[0].to_be_bytes().to_vec(),
-                network.fork_id[1].into(),
-            ),
+            network_id: 1,
+            genesis: [
+                212, 229, 103, 64, 248, 118, 174, 248, 192, 16, 184, 106, 64, 213, 245, 103, 69,
+                161, 24, 208, 144, 106, 52, 230, 154, 236, 140, 13, 177, 203, 143, 163,
+            ]
+            .to_vec(),
+            fork_id: (0xfc64ec04_u32.to_be_bytes().to_vec(), 1150000_u64),
             earliest: 0,
             latest: 0,
-            latest_hash: network.genesis_hash.to_vec(),
+            latest_hash: [
+                212, 229, 103, 64, 248, 118, 174, 248, 192, 16, 184, 106, 64, 213, 245, 103, 69,
+                161, 24, 208, 144, 106, 52, 230, 154, 236, 140, 13, 177, 203, 143, 163,
+            ]
+            .to_vec(),
         };
         let payload = message::create_eth69_status_message(reply);
         let _ = utils::send_message(payload, stream, &mut egress_mac, &mut egress_aes).await;
 
         (status.network_id, status.fork_id.0, status.genesis)
     } else {
-        let status = message::parse_status_message(uncrypted_body[1..].to_vec()).unwrap();
+        let status = message::parse_status_message(&uncrypted_body[1..]).unwrap();
         info!("Found status {:?}", &status);
 
         let reply = message::Status {
             version,
-            network_id: network.network_id,
-            td: network.head_td.to_be_bytes().to_vec(),
-            blockhash: network.genesis_hash.to_vec(),
-            genesis: network.genesis_hash.to_vec(),
-            fork_id: (
-                network.fork_id[0].to_be_bytes().to_vec(),
-                network.fork_id[1].into(),
-            ),
+            network_id: 1,
+            td: vec![0],
+            blockhash: [
+                212, 229, 103, 64, 248, 118, 174, 248, 192, 16, 184, 106, 64, 213, 245, 103, 69,
+                161, 24, 208, 144, 106, 52, 230, 154, 236, 140, 13, 177, 203, 143, 163,
+            ]
+            .to_vec(),
+            genesis: [
+                212, 229, 103, 64, 248, 118, 174, 248, 192, 16, 184, 106, 64, 213, 245, 103, 69,
+                161, 24, 208, 144, 106, 52, 230, 154, 236, 140, 13, 177, 203, 143, 163,
+            ]
+            .to_vec(),
+            fork_id: (0xfc64ec04_u32.to_be_bytes().to_vec(), 1150000_u64),
         };
         let payload = message::create_status_message(reply);
         let _ = utils::send_message(payload, stream, &mut egress_mac, &mut egress_aes).await;

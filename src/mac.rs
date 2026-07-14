@@ -15,7 +15,7 @@ impl MAC {
         return MAC { hash, secret };
     }
 
-    pub fn update(&mut self, data: &Vec<u8>) {
+    pub fn update(&mut self, data: &[u8]) {
         self.hash.update(data);
     }
 
