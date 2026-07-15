@@ -1,67 +1,20 @@
 services:
-  discv:
+  janus:
     image: "janus"
-    # You can build remotely the docker image by uncommenting this line and commenting the other `build`
-    # build: https://github.com/cyber-coop/eth-node-finder.git
+    # build: https://github.com/cyber-coop/janus.git
     build: .
-    container_name: discv
+    container_name: janus
     pull_policy: never
+    environment:
+      RUST_LOG: janus=info
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
       - ./config.toml:/config.toml
-    command: discv
     ports:
+      - "0.0.0.0:30303:30303/tcp"
       - "0.0.0.0:30303:30303/udp"
-
-  ping:
-    image: "janus"
-    # build: https://github.com/cyber-coop/eth-node-finder.git
-    build: .
-    container_name: ping
-    pull_policy: never
-    depends_on:
-      postgres:
-        condition: service_healthy
-      discv:
-        condition: service_started
-    volumes:
-      - ./config.toml:/config.toml
-    command: ping
-
-  server:
-    image: "janus"
-    # build: https://github.com/cyber-coop/eth-node-finder.git
-    build: .
-    container_name: server
-    pull_policy: never
-    depends_on:
-      postgres:
-        condition: service_healthy
-      discv:
-        condition: service_started
-    volumes:
-      - ./config.toml:/config.toml
-    command: server
-    ports:
-      - "0.0.0.0:50505:50505/tcp"
-      - "0.0.0.0:50505:50505/udp"
-
-  status:
-    image: "janus"
-    # build: https://github.com/cyber-coop/eth-node-finder.git
-    build: .
-    container_name: status
-    pull_policy: never
-    depends_on:
-      postgres:
-        condition: service_healthy
-      discv:
-        condition: service_started
-    volumes:
-      - ./config.toml:/config.toml
-    command: status
 
   postgres:
     image: "postgres:18"
@@ -80,4 +33,3 @@ services:
     volumes:
       # This has been changed in postgres 18
       - ./data/:/var/lib/postgresql/
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql

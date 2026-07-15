@@ -1,6 +1,6 @@
 use devp2p::{ecies::ECIES, util::pk2id};
 use janus::utils;
-use secp256k1_20::{PublicKey, SecretKey, SECP256K1};
+use secp256k1_20::{PublicKey, SECP256K1, SecretKey};
 use sha3::{Digest, Keccak256};
 
 #[test]

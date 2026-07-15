@@ -1,3 +1,5 @@
+use std::error;
+
 const BASE_PROTOCOL_OFFSET: u8 = 16;
 pub const BASE_PROTOCOL_VERSION: u32 = 5;
 
@@ -87,7 +89,7 @@ pub fn create_status_message(status: Status) -> Vec<u8> {
     return [code.to_vec(), payload_compressed].concat();
 }
 
-pub fn parse_status_message(payload: &[u8]) -> Option<Status> {
+pub fn parse_status_message(payload: &[u8]) -> Result<Status, Box<dyn error::Error>> {
     let mut dec = snap::raw::Decoder::new();
     let message = dec.decompress_vec(&payload).unwrap();
 
@@ -95,7 +97,7 @@ pub fn parse_status_message(payload: &[u8]) -> Option<Status> {
     assert!(r.is_list());
 
     if r.is_empty() {
-        return None;
+        return Err("empty STATUS".into());
     }
 
     let version: u32 = r.at(0).unwrap().as_val().unwrap();
@@ -110,16 +112,14 @@ pub fn parse_status_message(payload: &[u8]) -> Option<Status> {
     let fork_hash: Vec<u8> = forkidrlp.at(0).unwrap().as_val().unwrap();
     let fork_next: u64 = forkidrlp.at(1).unwrap().as_val().unwrap();
 
-    let status = Status {
+    Ok(Status {
         version,
         network_id,
         td,
         blockhash,
         genesis,
         fork_id: (fork_hash, fork_next),
-    };
-
-    return Some(status);
+    })
 }
 
 #[derive(Debug)]
@@ -156,7 +156,7 @@ pub fn create_eth69_status_message(status: Status69) -> Vec<u8> {
     return [code.to_vec(), payload_compressed].concat();
 }
 
-pub fn parse_eth69_status_message(payload: &[u8]) -> Option<Status69> {
+pub fn parse_eth69_status_message(payload: &[u8]) -> Result<Status69, Box<dyn error::Error>> {
     let mut dec = snap::raw::Decoder::new();
     let message = dec.decompress_vec(payload).unwrap();
 
@@ -164,7 +164,7 @@ pub fn parse_eth69_status_message(payload: &[u8]) -> Option<Status69> {
     assert!(r.is_list());
 
     if r.is_empty() {
-        return None;
+        return Err("empty STATUS".into());
     }
 
     let version: u32 = r.at(0).unwrap().as_val().unwrap();
@@ -178,7 +178,7 @@ pub fn parse_eth69_status_message(payload: &[u8]) -> Option<Status69> {
     let latest: u32 = r.at(5).unwrap().as_val().unwrap();
     let latest_hash: Vec<u8> = r.at(6).unwrap().as_val().unwrap();
 
-    Some(Status69 {
+    Ok(Status69 {
         version,
         network_id,
         genesis,
