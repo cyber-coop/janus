@@ -199,7 +199,22 @@ async fn main() {
         })
     };
 
-    let _ = tokio::join!(discovery_task, server_task, status_task);
+    // docker stop / compose down send SIGTERM, not SIGINT, so both need to be
+    // handled for graceful shutdown to actually trigger under real deployment.
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("failed to install SIGTERM handler");
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            info!("Received Ctrl+C, shutting down");
+        }
+        _ = sigterm.recv() => {
+            info!("Received SIGTERM, shutting down");
+        }
+        _ = async { let _ = tokio::join!(discovery_task, server_task, status_task); } => {
+            warn!("All tasks exited unexpectedly");
+        }
+    }
 }
 
 #[tracing::instrument(
@@ -391,8 +406,7 @@ async fn handle_incoming_connection(
         .bind(&hello.client)
         .bind(serde_json::to_value(&cap).unwrap())
         .execute(pool)
-        .await
-        .unwrap();
+        .await?;
 
     Ok(())
 }
@@ -647,8 +661,7 @@ async fn handle_outgoing_connection(
         .bind(&hello_message.client)
         .bind(&remote_id)
         .execute(pool)
-        .await
-        .unwrap();
+        .await?;
 
     Ok(())
 }

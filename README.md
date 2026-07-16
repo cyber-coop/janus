@@ -30,7 +30,7 @@ $ RUST_LOG=info cargo run
 
 ## Database migrations
 
-Schema changes live under `migrations/` (managed with `sqlx`). To apply pending migrations against a running database:
+Schema changes live under `migrations/` (managed with `sqlx`). `janus` applies any pending migrations itself on startup, so this is optional — mainly useful if you want to bring the schema up to date without starting the whole app, or check what's pending:
 ```
 $ cargo install sqlx-cli --no-default-features --features postgres
 $ sqlx migrate run --database-url postgres://postgres:wow@localhost:5432/blockchains
