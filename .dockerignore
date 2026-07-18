@@ -1,7 +1,10 @@
 /target
 /script
-docker-compose.prod.yaml
+compose.yaml
 Makefile.*
 config.toml
 *.json
 /data
+.git
+.github
+/tests

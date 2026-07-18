@@ -1,0 +1,2 @@
+ALTER TABLE nodes
+    ADD COLUMN IF NOT EXISTS last_discovered_at TIMESTAMP;

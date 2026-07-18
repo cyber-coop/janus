@@ -1,9 +1,9 @@
 use aes::cipher::{KeyIvInit, StreamCipher};
 use byteorder::ByteOrder;
 use byteorder::{BigEndian, ReadBytesExt};
-use hmac_sha256::{Hash, HMAC};
-use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+use hmac_sha256::{HMAC, Hash};
 use secp256k1::Message;
+use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use sha3::{Digest, Keccak256};
 use std::error;
 use std::io;

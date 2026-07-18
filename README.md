@@ -1,4 +1,8 @@
-# Ethereum Node finder
+# Janus
+
+<p align="center">
+  <img src="https://mythologica.fr/rome/pic/janus.jpg" alt="Janus, the two-faced Roman god of doorways and transitions" width="250">
+</p>
 
 Collect all the node found on Ethereum DISCV4 protocol (but not all them are Ethereum). The nodes IP are stored in a postgres database.
 
@@ -6,7 +10,7 @@ Collect all the node found on Ethereum DISCV4 protocol (but not all them are Eth
 
 ```
 $ git clone https://github.com/cyber-coop/eth-node-finder.git
-$ mv config.example.toml config.yml
+$ cp config.example.toml config.toml
 $ docker compose up
 ```
 
@@ -19,19 +23,17 @@ $ docker compose up -d postgres
 
 Create your `config.toml` from `config.example.toml`.
 
-Start `discv` to see it runnning
+Start `janus` to see it running. It's a single binary/process that does discovery (DISCV4), accepts incoming connections, and dials out to check node status, all sharing one node identity.
 ```
-$ RUST_LOG=info cargo r --bin discv
-```
-
-Start `ping` to see it runnning
-```
-$ RUST_LOG=info cargo r --bin ping
+$ RUST_LOG=info cargo run
 ```
 
-Start `status` to see it runnning
+## Database migrations
+
+Schema changes live under `migrations/` (managed with `sqlx`). `janus` applies any pending migrations itself on startup, so this is optional — mainly useful if you want to bring the schema up to date without starting the whole app, or check what's pending:
 ```
-$ RUST_LOG=info cargo r --bin status
+$ cargo install sqlx-cli --no-default-features --features postgres
+$ sqlx migrate run --database-url postgres://postgres:wow@localhost:5432/blockchains
 ```
 
 ## Postgres
@@ -43,6 +45,6 @@ $ docker exec -ti postgres bash
 Once inside the container
 ```
 $ psql -U postgres -d blockchains
-> SELECT * FROM discv4.nodes;
-> SELECT * FROM discv4.nodes WHERE network_id IS NOT NULL;
+> SELECT * FROM nodes;
+> SELECT * FROM nodes WHERE network_id IS NOT NULL;
 ```
