@@ -25,6 +25,7 @@ byteorder = "1.5"
 hmac-sha256 = "1.1"
 ctr = "0.10"
 k256 = { version = "0.14", features = ["ecdh", "ecdsa-core", "arithmetic"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [dev-dependencies]
 devp2p = { git = "https://github.com/rllola/devp2p" }

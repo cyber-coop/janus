@@ -12,6 +12,8 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tracing::error;
 use tracing::info;
 use tracing::trace;
@@ -84,14 +86,28 @@ async fn main() {
     // Create the channel for status task to query those peers
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NodeRecord>();
 
-    let discovery_task = {
+    // `cancel_token` signals the three main loops to stop starting new work.
+    // `tracker` tracks every in-flight connection handler so we can wait for
+    // them to actually finish (rather than just stop spawning new ones) before
+    // the process exits.
+    let cancel_token = CancellationToken::new();
+    let tracker = TaskTracker::new();
+
+    let mut discovery_task = {
         // shadow naming (maybe this is a mistake)
         let pool = pool.clone();
+        let cancel_token = cancel_token.clone();
         tokio::spawn(async move {
             loop {
                 let target = NodeId::random();
                 info!("Looking up random target: {}", target);
-                let result = node.lookup(target).await;
+                let result = tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        info!("Discovery loop shutting down");
+                        break;
+                    }
+                    result = node.lookup(target) => result,
+                };
 
                 for entry in result {
                     info!("Found node: {:?}", entry);
@@ -125,48 +141,52 @@ async fn main() {
         })
     };
 
-    let status_task = {
+    // No explicit cancellation check needed here: once discovery_task stops,
+    // its captured `tx` is dropped, the channel closes, and `rx.recv()` below
+    // returns `None`, ending this loop naturally.
+    let mut status_task = {
         let pool = pool.clone();
+        let tracker = tracker.clone();
         tokio::spawn(async move {
-            loop {
-                while let Some(entry) = rx.recv().await {
-                    let addr = SocketAddr::from((entry.address, entry.tcp_port));
+            while let Some(entry) = rx.recv().await {
+                let addr = SocketAddr::from((entry.address, entry.tcp_port));
 
-                    let pool = pool.clone();
-                    tokio::spawn(async move {
-                        // TODO: distinguish connection-failure kinds (refused vs timed out, etc.)
-                        // and persist them to the database instead of just logging, so we can
-                        // track per-node reachability history rather than only the latest attempt.
-                        let mut stream = match tokio::time::timeout(
-                            Duration::from_secs(5),
-                            TcpStream::connect(&addr),
-                        )
-                        .await
-                        {
-                            Ok(Ok(s)) => s,
-                            Ok(Err(_)) => {
-                                trace!("Couldn't reach node");
-                                return;
-                            }
-                            Err(_) => {
-                                trace!("Connection attempt timed out");
-                                return;
-                            }
-                        };
-                        if let Err(err) =
-                            handle_outgoing_connection(&mut stream, &pool, entry.id.as_bytes())
-                                .await
-                        {
-                            info!("Failed to get the STATUS message from node : {}", err);
-                        };
-                    });
-                }
+                let pool = pool.clone();
+                tracker.spawn(async move {
+                    // TODO: distinguish connection-failure kinds (refused vs timed out, etc.)
+                    // and persist them to the database instead of just logging, so we can
+                    // track per-node reachability history rather than only the latest attempt.
+                    let mut stream = match tokio::time::timeout(
+                        Duration::from_secs(5),
+                        TcpStream::connect(&addr),
+                    )
+                    .await
+                    {
+                        Ok(Ok(s)) => s,
+                        Ok(Err(_)) => {
+                            trace!("Couldn't reach node");
+                            return;
+                        }
+                        Err(_) => {
+                            trace!("Connection attempt timed out");
+                            return;
+                        }
+                    };
+                    if let Err(err) =
+                        handle_outgoing_connection(&mut stream, &pool, entry.id.as_bytes()).await
+                    {
+                        info!("Failed to get the STATUS message from node : {}", err);
+                    };
+                });
             }
+            info!("Status task shutting down");
         })
     };
 
-    let server_task = {
+    let mut server_task = {
         let pool = pool.clone();
+        let tracker = tracker.clone();
+        let cancel_token = cancel_token.clone();
         tokio::spawn(async move {
             let tcp_bind_addr = SocketAddr::from((Ipv6Addr::UNSPECIFIED, SERVER_PORT));
             let listener = TcpListener::bind(tcp_bind_addr)
@@ -175,17 +195,23 @@ async fn main() {
             info!("Server started on [::]:{SERVER_PORT}");
 
             loop {
-                let (mut socket, addr) = match listener.accept().await {
-                    Ok(conn) => conn,
-                    Err(err) => {
-                        error!("Failed to accept connection: {}", err);
-                        continue;
+                let (mut socket, addr) = tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        info!("Server task shutting down");
+                        break;
                     }
+                    conn = listener.accept() => match conn {
+                        Ok(conn) => conn,
+                        Err(err) => {
+                            error!("Failed to accept connection: {}", err);
+                            continue;
+                        }
+                    },
                 };
                 info!("New connection: {:?}", addr);
 
                 let pool = pool.clone();
-                tokio::spawn(async move {
+                tracker.spawn(async move {
                     if let Err(err) =
                         handle_incoming_connection(&mut socket, &pool, &secret_key.secret_bytes())
                             .await
@@ -211,10 +237,29 @@ async fn main() {
         _ = sigterm.recv() => {
             info!("Received SIGTERM, shutting down");
         }
-        _ = async { let _ = tokio::join!(discovery_task, server_task, status_task); } => {
-            warn!("All tasks exited unexpectedly");
+        _ = &mut discovery_task => {
+            warn!("Discovery task exited unexpectedly");
+        }
+        _ = &mut server_task => {
+            warn!("Server task exited unexpectedly");
+        }
+        _ = &mut status_task => {
+            warn!("Status task exited unexpectedly");
         }
     }
+
+    // Signal all three main loops to stop starting new work, and wait for them
+    // to actually finish (they may be mid-lookup/mid-accept).
+    cancel_token.cancel();
+    info!("Waiting for the main loops to stop...");
+    let _ = tokio::join!(discovery_task, server_task, status_task);
+
+    // Now drain: let every already-spawned connection handler run to completion
+    // instead of being dropped when the process exits.
+    tracker.close();
+    info!("Waiting for in-flight connections to finish...");
+    tracker.wait().await;
+    info!("Shutdown complete");
 }
 
 #[tracing::instrument(

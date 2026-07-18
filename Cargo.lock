@@ -1587,6 +1587,7 @@ dependencies = [
  "snap",
  "sqlx",
  "tokio",
+ "tokio-util 0.7.18",
  "toml",
  "tracing",
  "tracing-subscriber",
@@ -3226,6 +3227,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]
