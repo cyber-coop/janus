@@ -286,7 +286,7 @@ async fn handle_incoming_connection(
     // Handle auth eip8 message
     let (payload, shared_mac_data) = utils::read_auth_eip8(stream).await?;
     let (remote_id, remote_nonce, ephemeral_shared_secret) =
-        utils::verify_auth_eip8(&payload, &shared_mac_data, private_key, &ephemeral_privkey);
+        utils::verify_auth_eip8(&payload, &shared_mac_data, private_key, &ephemeral_privkey)?;
     span.record("remote_id", hex::encode(&remote_id));
 
     // Send Ack message
@@ -499,7 +499,7 @@ async fn handle_outgoing_connection(
 
     // Handle Ack
     info!("ACK message received");
-    let decrypted = utils::decrypt_message(&payload, &shared_mac_data, &private_key);
+    let decrypted = utils::decrypt_message(&payload, &shared_mac_data, &private_key)?;
 
     // decode RPL data
     let rlp = rlp::Rlp::new(&decrypted);

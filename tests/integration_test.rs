@@ -62,7 +62,8 @@ fn communicate() {
         &shared_mac_data,
         &[1_u8; 32].to_vec(),
         &[2_u8; 32].to_vec(),
-    );
+    )
+    .unwrap();
 
     let remote_data = [shared_mac_data, payload].concat();
 

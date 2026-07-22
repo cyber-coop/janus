@@ -87,8 +87,14 @@ pub fn encrypt_message(remote_public: &[u8], mut data: Vec<u8>, shared_mac_data:
     return result;
 }
 
-pub fn decrypt_message(payload: &[u8], shared_mac_data: &[u8], private_key: &[u8]) -> Vec<u8> {
-    assert_eq!(payload[0], 0x04);
+pub fn decrypt_message(
+    payload: &[u8],
+    shared_mac_data: &[u8],
+    private_key: &[u8],
+) -> Result<Vec<u8>, Box<dyn error::Error>> {
+    if payload[0] != 0x04 {
+        return Err("Invalid ECIES payload: expected 0x04 prefix".into());
+    }
 
     let public_key = payload[0..65].to_vec();
     let data_iv = payload[65..(payload.len() - 32)].to_vec();
@@ -105,9 +111,11 @@ pub fn decrypt_message(payload: &[u8], shared_mac_data: &[u8], private_key: &[u8
     let mut input: Vec<u8> = vec![];
     input.extend(&data_iv);
     input.extend(shared_mac_data);
-    let _tag = HMAC::mac(input, m_key).to_vec();
+    let expected_tag = HMAC::mac(input, m_key).to_vec();
 
-    assert_eq!(_tag, tag);
+    if expected_tag != tag {
+        return Err("MAC tag mismatch while decrypting message".into());
+    }
 
     // decrypt data
     let iv = &data_iv[0..16];
@@ -116,7 +124,7 @@ pub fn decrypt_message(payload: &[u8], shared_mac_data: &[u8], private_key: &[u8
     // decipher encrypted_data and return result in encrypted_data variable
     decipher.apply_keystream(&mut encrypted_data);
 
-    return encrypted_data;
+    Ok(encrypted_data)
 }
 
 pub fn create_auth_eip8(
@@ -207,8 +215,8 @@ pub fn verify_auth_eip8(
     shared_mac_data: &[u8],
     private_key: &[u8],
     ephemeral_privkey: &[u8],
-) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    let decrypted = decrypt_message(payload, shared_mac_data, private_key);
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), Box<dyn error::Error>> {
+    let decrypted = decrypt_message(payload, shared_mac_data, private_key)?;
 
     // decode RPL data
     let rlp = rlp::Rlp::new(&decrypted);
@@ -238,7 +246,7 @@ pub fn verify_auth_eip8(
 
     let ephemeral_shared_secret = ecdh_x(&remote_ephemeral_public_key, ephemeral_privkey);
 
-    return (remote_id, remote_nonce, ephemeral_shared_secret);
+    Ok((remote_id, remote_nonce, ephemeral_shared_secret))
 }
 
 pub fn create_auth_non_eip8(
@@ -527,8 +535,8 @@ pub fn handle_ack_message(
     shared_mac_data: &[u8],
     private_key: &[u8],
     ephemeral_privkey: &[u8],
-) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    let decrypted = decrypt_message(payload, shared_mac_data, private_key);
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), Box<dyn error::Error>> {
+    let decrypted = decrypt_message(payload, shared_mac_data, private_key)?;
 
     // decode RPL data
     let rlp = rlp::Rlp::new(&decrypted);
@@ -540,5 +548,5 @@ pub fn handle_ack_message(
 
     let ephemeral_shared_secret = ecdh_x(&remote_public_key, ephemeral_privkey);
 
-    return (remote_public_key, remote_nonce, ephemeral_shared_secret);
+    Ok((remote_public_key, remote_nonce, ephemeral_shared_secret))
 }
