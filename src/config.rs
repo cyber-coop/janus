@@ -11,9 +11,20 @@ pub struct DatabaseConfig {
     pub dbname: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct NodeConfig {
+    // Optional explicit override: hex-encoded secp256k1 secret key for the
+    // node's identity on the discovery network. If not set here, it falls
+    // back to a separate, auto-managed key file (see main.rs) rather than
+    // ever being written into this file.
+    pub secret_key: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub database: DatabaseConfig,
+    #[serde(default)]
+    pub node: NodeConfig,
 }
 
 pub fn read_config() -> Config {

@@ -3,3 +3,10 @@ host = "postgres"
 user = "postgres"
 password = "wow"
 dbname = "blockchains"
+
+# Optional. If omitted, the node's discovery identity is auto-generated on
+# first run and persisted to a separate `node.key` file instead (so it
+# survives restarts). Only set this if you want to pin the identity
+# explicitly, e.g. a hex-encoded secp256k1 secret key:
+# [node]
+# secret_key = "deadbeef00000000000000000000000000000000000000000000000000000000"
