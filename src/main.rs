@@ -39,6 +39,36 @@ const GENESIS_HASH: [u8; 32] = [
 const FORK_HASH: [u8; 4] = [252, 100, 236, 4]; // 0xfc64ec04
 const FORK_NEXT: u64 = 1150000;
 const NETWORK_ID: u64 = 1;
+const NODE_KEY_PATH: &str = "node.key";
+
+// Loads the node's persistent discovery identity from `path`, generating and
+// saving a new one on first run. This is a separate, auto-managed file (not
+// config.toml) so restarts keep the same identity instead of every restart
+// looking like a brand new, unknown node to the rest of the network.
+fn load_or_generate_node_key(path: &str) -> SecretKey {
+    if let Ok(hex_key) = std::fs::read_to_string(path) {
+        match hex::decode(hex_key.trim())
+            .ok()
+            .and_then(|bytes| SecretKey::from_slice(&bytes).ok())
+        {
+            Some(key) => return key,
+            None => warn!(
+                "{} exists but doesn't contain a valid key, generating a new one",
+                path
+            ),
+        }
+    }
+
+    let key = SecretKey::new(&mut secp256k1::rand::thread_rng());
+    match std::fs::write(path, hex::encode(key.secret_bytes())) {
+        Ok(()) => info!("Generated a new node identity and saved it to {}", path),
+        Err(err) => warn!(
+            "Generated a new node identity but couldn't save it to {}: {} - identity will reset on next restart",
+            path, err
+        ),
+    }
+    key
+}
 
 #[tokio::main]
 async fn main() {
@@ -69,7 +99,15 @@ async fn main() {
         .expect("database migrations to succeed");
     info!("Database migrations applied");
 
-    let secret_key = SecretKey::new(&mut secp256k1::rand::thread_rng());
+    let secret_key = match &cfg.node.secret_key {
+        Some(hex_key) => {
+            let bytes =
+                hex::decode(hex_key).expect("node.secret_key in config.toml must be valid hex");
+            SecretKey::from_slice(&bytes)
+                .expect("node.secret_key in config.toml must be a valid secp256k1 key")
+        }
+        None => load_or_generate_node_key(NODE_KEY_PATH),
+    };
 
     let node = Node::new(
         SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, SERVER_PORT).into(),
