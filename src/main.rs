@@ -302,7 +302,7 @@ async fn main() {
 
 #[tracing::instrument(
     skip(stream, pool, private_key),
-    fields(remote_id = tracing::field::Empty, ip = tracing::field::Empty, tcp_port = tracing::field::Empty)
+    fields(remote_id = tracing::field::Empty, ip = tracing::field::Empty, client = tracing::field::Empty, eth_version = tracing::field::Empty, network_id = tracing::field::Empty)
 )]
 async fn handle_incoming_connection(
     stream: &mut TcpStream,
@@ -310,9 +310,9 @@ async fn handle_incoming_connection(
     private_key: &[u8],
 ) -> Result<(), Box<dyn Error>> {
     let peer_addr = stream.peer_addr().expect("to have a peer address");
+    let peer_addr = SocketAddr::new(peer_addr.ip().to_canonical(), peer_addr.port());
     let span = tracing::Span::current();
     span.record("ip", peer_addr.ip().to_string());
-    span.record("tcp_port", peer_addr.port());
 
     let mut nonce = vec![0; 32];
     rand::rng().fill_bytes(&mut nonce);
@@ -325,7 +325,7 @@ async fn handle_incoming_connection(
     let (payload, shared_mac_data) = utils::read_auth_eip8(stream).await?;
     let (remote_id, remote_nonce, ephemeral_shared_secret) =
         utils::verify_auth_eip8(&payload, &shared_mac_data, private_key, &ephemeral_privkey)?;
-    span.record("remote_id", hex::encode(&remote_id));
+    span.record("remote_id", hex::encode(&remote_id[0..6]));
 
     // Send Ack message
     let init_msg = utils::create_ack(&remote_id, &nonce, &ephemeral_privkey, &pad);
@@ -396,7 +396,7 @@ async fn handle_incoming_connection(
     }
 
     let hello = message::parse_hello_message(&uncrypted_body[1..]);
-    info!("{:?}", &hello);
+    span.record("client", &hello.client);
 
     let capabilities = serde_json::to_string(&hello.capabilities).unwrap();
 
@@ -409,6 +409,7 @@ async fn handle_incoming_connection(
             }
         }
     }
+    span.record("eth_version", version);
 
     info!("Handling STATUS message");
     let uncrypted_body = match utils::read_message(stream, &mut ingress_mac, &mut ingress_aes).await
@@ -475,6 +476,7 @@ async fn handle_incoming_connection(
 
         (status.network_id, status.fork_id.0, status.genesis)
     };
+    span.record("network_id", network_id);
 
     info!("Sending STATUS message done");
 
@@ -494,11 +496,19 @@ async fn handle_incoming_connection(
     Ok(())
 }
 
+#[tracing::instrument(
+    skip(stream, pool, remote_id),
+    fields(remote_id = %hex::encode(&remote_id[0..6]), client = tracing::field::Empty, ip = tracing::field::Empty, eth_version = tracing::field::Empty, network_id = tracing::field::Empty)
+)]
 async fn handle_outgoing_connection(
     stream: &mut TcpStream,
     pool: &PgPool,
     remote_id: &[u8],
 ) -> Result<(), Box<dyn Error>> {
+    let span = tracing::Span::current();
+    let peer_addr = stream.peer_addr().expect("to have a peer address");
+    let peer_addr = SocketAddr::new(peer_addr.ip().to_canonical(), peer_addr.port());
+    span.record("ip", peer_addr.ip().to_string());
     let private_key = SecretKey::new(&mut secp256k1::rand::thread_rng())
         .secret_bytes()
         .to_vec();
@@ -601,6 +611,7 @@ async fn handle_outgoing_connection(
         return Err("First message should be Hello".into());
     }
     let hello_message = message::parse_hello_message(&uncrypted_body[1..]);
+    span.record("client", &hello_message.client);
 
     let capabilities = serde_json::to_string(&hello_message.capabilities).unwrap();
 
@@ -613,6 +624,7 @@ async fn handle_outgoing_connection(
             }
         }
     }
+    span.record("eth_version", version);
 
     /******************
      *
@@ -734,6 +746,7 @@ async fn handle_outgoing_connection(
             their_status.genesis,
         )
     };
+    span.record("network_id", their_network_id);
 
     let cap: Vec<(String, u32)> = serde_json::from_str(&capabilities).unwrap();
     sqlx::query("UPDATE nodes SET network_id = $1, fork_id = $2, genesis = $3, capabilities = $4, client = $5, last_ping_timestamp = NOW() WHERE id = $6;")
